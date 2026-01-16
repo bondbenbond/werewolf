@@ -416,6 +416,41 @@ io.on("connection", (socket) => {
   );
 
   socket.on(
+    "host:kickPlayer",
+    (payload: { roomCode: string; hostPlayerId: string; targetPlayerId: string }) => {
+      log("host:kickPlayer", payload);
+      const room = ensureRoom(payload.roomCode);
+      if (!room) return;
+      if (!isHost(room.state, payload.hostPlayerId)) {
+        return sendError(socket, "NOT_HOST", "Host only.");
+      }
+      if (!isPhase(room.state, "lobby")) {
+        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Can only kick players in the lobby.");
+      }
+      const target = room.state.playersById[payload.targetPlayerId];
+      if (!target) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
+      if (payload.targetPlayerId === room.state.hostPlayerId) {
+        return sendError(socket, "INVALID_PAYLOAD", "Host cannot be kicked.");
+      }
+
+      delete room.state.playersById[payload.targetPlayerId];
+      room.state.playerOrder = room.state.playerOrder.filter((id) => id !== payload.targetPlayerId);
+      touch(room.state);
+      emitRoomUpdate(room);
+
+      if (target.socketId) {
+        const targetSocket = io.sockets.sockets.get(target.socketId);
+        if (targetSocket) {
+          targetSocket.emit("room:kicked");
+          targetSocket.leave(room.state.roomCode);
+          targetSocket.disconnect(true);
+          socketLookup.delete(target.socketId);
+        }
+      }
+    }
+  );
+
+  socket.on(
     "host:updateSettings",
     (payload: { roomCode: string; hostPlayerId: string; settings: GameSettings }) => {
       log("host:updateSettings", { roomCode: payload.roomCode, host: payload.hostPlayerId });
@@ -928,11 +963,17 @@ io.on("connection", (socket) => {
       if (!room.state.settings.tokensEnabled) {
         return sendError(socket, "INVALID_PAYLOAD", "Tokens disabled.");
       }
-      if (payload.playerId === payload.targetPlayerId) {
-        return sendError(socket, "INVALID_TARGET", "Cannot target self.");
-      }
-      if (!room.state.playersById[payload.targetPlayerId]) {
-        return sendError(socket, "INVALID_TARGET", "Target missing.");
+      const isCenterTarget = payload.targetPlayerId.startsWith("center-");
+      const centerIndex = isCenterTarget ? Number(payload.targetPlayerId.split("center-")[1]) : -1;
+      if (!isCenterTarget) {
+        if (payload.playerId === payload.targetPlayerId) {
+          return sendError(socket, "INVALID_TARGET", "Cannot target self.");
+        }
+        if (!room.state.playersById[payload.targetPlayerId]) {
+          return sendError(socket, "INVALID_TARGET", "Target missing.");
+        }
+      } else if (Number.isNaN(centerIndex) || centerIndex < 0 || centerIndex > 2) {
+        return sendError(socket, "INVALID_TARGET", "Center index missing.");
       }
       const ownerTokens =
         room.state.tokens.tokensByPlayer[payload.playerId] ??
@@ -964,19 +1005,36 @@ io.on("connection", (socket) => {
           emitRoomUpdate(room);
           return;
         }
-        // Ensure only one assignment per role globally
+        const roleLimit = room.state.roleSelection.roles.filter((role) => role === payload.role).length;
+        const maxAssignments = Math.max(1, roleLimit);
+        const roleAssignments: Array<{ ownerId: string; targetId: string }> = [];
         Object.entries(room.state.tokens.suspectRolesByPlayer).forEach(([ownerId, mapping]) => {
           Object.entries(mapping).forEach(([targetId, role]) => {
-            if (role === payload.role && !(ownerId === payload.playerId && targetId === payload.targetPlayerId)) {
-              clearAssignment(ownerId, targetId);
+            if (role === payload.role) {
+              roleAssignments.push({ ownerId, targetId });
             }
           });
         });
+        if (roleAssignments.length >= maxAssignments) {
+          const toClear = roleAssignments.find(
+            ({ ownerId, targetId }) =>
+              !(ownerId === payload.playerId && targetId === payload.targetPlayerId)
+          );
+          if (toClear) {
+            clearAssignment(toClear.ownerId, toClear.targetId);
+          }
+        }
       }
 
       const totalUsed = Object.values(ownerTokens).reduce((sum, n) => sum + n, 0);
-      if (totalUsed >= room.state.settings.tokensPerPlayerLimit) {
-        return sendError(socket, "LIMIT_EXCEEDED", "Token limit reached.");
+      const alreadyAssigned = ownerTokens[payload.targetPlayerId];
+      if (totalUsed >= room.state.settings.tokensPerPlayerLimit && !alreadyAssigned) {
+        const existingTargets = Object.keys(ownerTokens);
+        if (existingTargets.length) {
+          clearAssignment(payload.playerId, existingTargets[0]);
+        } else {
+          return sendError(socket, "LIMIT_EXCEEDED", "Token limit reached.");
+        }
       }
 
       ownerTokens[payload.targetPlayerId] = 1;

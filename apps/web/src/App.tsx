@@ -64,7 +64,7 @@ type GameUpdatePayload = {
 };
 
 const createSocket = () =>
-  io("http://localhost:4000", {
+  io("http://192.168.4.81:4000/", {
     transports: ["polling"],
     upgrade: false,
     reconnectionAttempts: 5,
@@ -134,6 +134,11 @@ function App() {
   const [nightCountdown, setNightCountdown] = useState(0);
   const [view, setView] = useState<"home" | "configure" | "game">("home");
   const sessionRef = useRef<{ roomCode: string; playerId: string; resumeSecret: string } | null>(null);
+  const urlRoomRef = useRef<string | null>(null);
+  const joinPromptedRef = useRef(false);
+  const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [pendingJoinRoom, setPendingJoinRoom] = useState<string | null>(null);
+  const [pendingJoinName, setPendingJoinName] = useState("");
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -151,11 +156,24 @@ function App() {
   const [suspectTargetId, setSuspectTargetId] = useState<string | null>(null);
   const nightStepKeyRef = useRef<string | null>(null);
   const [selectedVoteId, setSelectedVoteId] = useState<string | null>(null);
+  const [showRevealOverlay, setShowRevealOverlay] = useState(true);
   const cardBackSrc = "/assets/cards/card-back.jpeg";
-  const roleImage = (role?: Role) => (role ? `/assets/cards/${role}.jpeg` : undefined);
+const roleImage = (role?: Role) => (role ? `/assets/cards/${role}.jpeg` : undefined);
+const roleFocus: Record<Role, { x: string; y: string }> = {
+  villager: { x: "50%", y: "45%" },
+  werewolf: { x: "48%", y: "40%" },
+  minion: { x: "52%", y: "42%" },
+  mason: { x: "50%", y: "45%" },
+  seer: { x: "50%", y: "45%" },
+  robber: { x: "48%", y: "40%" },
+  troublemaker: { x: "50%", y: "42%" },
+  insomniac: { x: "50%", y: "46%" },
+};
   const [myCurrentRole, setMyCurrentRole] = useState<Role | undefined>(undefined);
   const [myFaceUp, setMyFaceUp] = useState(true);
   const [viewport, setViewport] = useState({ w: typeof window !== "undefined" ? window.innerWidth : 1200, h: typeof window !== "undefined" ? window.innerHeight : 800 });
+  const sanitizeRoom = (value: string) => value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6);
+  const [autoAdvanceNight, setAutoAdvanceNight] = useState(false);
 
   const faceStyle = (role?: Role, face: "up" | "down" = "down") => {
     if (face === "down") {
@@ -183,6 +201,32 @@ function App() {
       setView("game");
     }
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get("room");
+    if (roomParam) {
+      const code = sanitizeRoom(roomParam);
+      if (code.length >= 4) {
+        urlRoomRef.current = code;
+        setRoomCode(code);
+        setPendingJoinRoom(code);
+        setPendingJoinName((name || "").trim());
+        if (!sessionRef.current) {
+          setView("configure");
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (joinPromptedRef.current) return;
+    if (!pendingJoinRoom) return;
+    if (sessionRef.current) return;
+    if (connectionStatus === "connecting") return;
+    joinPromptedRef.current = true;
+    setJoinModalOpen(true);
+  }, [connectionStatus, pendingJoinRoom, name]);
 
   useEffect(() => {
     socket.onAny((event, ...args) => {
@@ -231,6 +275,13 @@ function App() {
       sessionRef.current = null;
       setUpdate(null);
       alert("The host ended the game. Returning to the main menu.");
+      setView("home");
+    });
+    socket.on("room:kicked", () => {
+      clearSession();
+      sessionRef.current = null;
+      setUpdate(null);
+      alert("You were removed from the lobby by the host.");
       setView("home");
     });
     setConnectionStatus(socket.connected ? "connected" : "connecting");
@@ -309,12 +360,36 @@ function App() {
     if (update?.you.originalRole) {
       setMyCurrentRole(update.you.originalRole);
     }
-    if (update?.game.phase === "lobby" || update?.game.phase === "deal") {
-      setMyFaceUp(true);
-    } else if (update?.game.phase && update.game.phase !== "night") {
-      setMyFaceUp(true);
+    const phase = update?.game.phase;
+    if (!phase) return;
+    if (phase === "lobby") {
+      setMyFaceUp(false);
+      return;
     }
-  }, [update?.you.originalRole, update?.game.phase]);
+    if (phase === "deal") {
+      const acked = !!update.game.dealAcks?.[update.you.playerId];
+      setMyFaceUp(acked);
+      return;
+    }
+    if (phase === "night") {
+      setMyFaceUp(false);
+      return;
+    }
+    if (phase === "discussion" || phase === "voting") {
+      setMyFaceUp(false);
+      return;
+    }
+    // reveal or other host-only states
+    setMyFaceUp(true);
+  }, [update?.you.originalRole, update?.game.phase, update?.game.dealAcks, update?.you.playerId]);
+
+  useEffect(() => {
+    if (update?.game.phase === "reveal") {
+      setShowRevealOverlay(true);
+    } else {
+      setShowRevealOverlay(false);
+    }
+  }, [update?.game.phase]);
 
   useEffect(() => {
     if (!update?.private) return;
@@ -384,6 +459,32 @@ function App() {
     }
   }, [update?.game.roleSelection, update?.you.isHost]);
 
+  // Host: auto-advance night steps if enabled.
+  useEffect(() => {
+    if (!update?.you.isHost) return;
+    if (!autoAdvanceNight) return;
+    if (!update.game.night) return;
+    const key = `${update.game.night.stepRole}-${update.game.night.stepIndex}`;
+    const advancedKey = `${key}-auto-advanced`;
+    if (nightStepKeyRef.current !== key && nightStepKeyRef.current !== advancedKey) {
+      nightStepKeyRef.current = key;
+    }
+    if (nightStepKeyRef.current === advancedKey) return;
+    if (nightPromptOpen) {
+      setNightPromptOpen(false);
+      return;
+    }
+    if (nightCountdown > 0) return;
+    nightStepKeyRef.current = advancedKey;
+    advanceNight();
+  }, [
+    autoAdvanceNight,
+    update?.game.night?.stepIndex,
+    update?.game.night?.stepRole,
+    nightPromptOpen,
+    nightCountdown,
+  ]);
+
   useEffect(() => {
     if (update?.game.phase !== "deal") {
       setDealAckedLocal(false);
@@ -436,13 +537,24 @@ function App() {
     setView("configure");
   };
 
-  const joinRoom = () => {
-    console.log("[ui] join room", { roomCode, name });
+  const joinRoom = (opts?: { room?: string; playerName?: string }) => {
+    const targetRoom = sanitizeRoom(opts?.room ?? roomCode);
+    if (targetRoom.length < 4) {
+      setError("Room code must be 4-6 characters");
+      return;
+    }
+    setError(null);
+    const targetName = opts?.playerName?.trim() || name.trim() || "Player";
+    console.log("[ui] join room", { roomCode: targetRoom, name: targetName });
+    setRoomCode(targetRoom);
+    setName(targetName);
+    setJoinModalOpen(false);
+    setPendingJoinRoom(null);
     socket.emit(
       "room:join",
       {
-        roomCode: roomCode.trim().toUpperCase(),
-        name: name.trim() || "Player",
+        roomCode: targetRoom,
+        name: targetName,
       },
       (resp?: { playerId: string; resumeSecret: string; roomCode: string }) => {
         if (resp?.playerId && resp?.resumeSecret && resp?.roomCode) {
@@ -594,22 +706,24 @@ function App() {
     });
   };
 
+  const kickPlayer = (targetPlayerId: string) => {
+    if (!update || !update.you.isHost) return;
+    socket.emit("host:kickPlayer", {
+      roomCode: update.roomCode,
+      hostPlayerId: update.you.playerId,
+      targetPlayerId,
+    });
+  };
+
   const renderLanding = () => (
     <div className="page hero-shell">
       <header className="hero">
         <p className="eyebrow">One-Night Social Deduction</p>
-        <h1>Werewolf Control Room</h1>
-        <p className="lede">
-          Pick a lane: host creates and configures the deck, or join with a room code. Built for fast
-          mobile play.
-        </p>
+        <h1>One Night Ultimate Werewolf</h1>
+        <p className="lede">Host a table for friends or jump in with a room code.</p>
         <div className="choice-grid">
-          <div className="glass choice-card">
+          <div className="glass choice-card create-card">
             <h2>Create a game</h2>
-            <div className="field">
-              <label>Game name</label>
-              <input value={gameName} onChange={(e) => setGameName(e.target.value)} />
-            </div>
             <div className="field">
               <label>Your name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Riley" />
@@ -618,7 +732,7 @@ function App() {
               Create & configure
             </button>
           </div>
-          <div className="glass choice-card">
+          <div className="glass choice-card join-card">
             <h2>Join a game</h2>
             <div className="field">
               <label>Your name</label>
@@ -628,8 +742,8 @@ function App() {
               <label>Room code</label>
               <input
                 value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="ABC123"
+                onChange={(e) => setRoomCode(sanitizeRoom(e.target.value))}
+                placeholder="123456"
               />
             </div>
             <button className="button ghost" type="button" onClick={joinRoom}>
@@ -638,7 +752,7 @@ function App() {
           </div>
         </div>
         <div className="pill-row">
-          <span className="pill">Socket: {connectionStatus}</span>
+          <span className="pill">Status: {connectionStatus}</span>
           <span className="pill">ID: {socketId ?? "n/a"}</span>
           {sessionRef.current ? (
             <button
@@ -667,7 +781,60 @@ function App() {
     </div>
   );
 
-  const renderPlayerCards = () => (
+  const renderInviteJoin = () => {
+    const code = pendingJoinRoom ?? urlRoomRef.current ?? roomCode;
+    return (
+      <div className="page hero-shell">
+        <header className="hero">
+          <p className="eyebrow">Join game</p>
+          <h1>Room {code || "..."}</h1>
+          <p className="lede">Enter your name to jump into this room.</p>
+          <div className="choice-grid" style={{ gridTemplateColumns: "1fr" }}>
+            <div className="glass choice-card join-card">
+              <div className="field">
+                <label>Your name</label>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Riley"
+                />
+              </div>
+              <button
+                className="button primary"
+                type="button"
+                onClick={() =>
+                  joinRoom({
+                    room: code,
+                    playerName: name || pendingJoinName || "Player",
+                  })
+                }
+                disabled={!code}
+              >
+                Join room
+              </button>
+              <button
+                className="button ghost small"
+                type="button"
+                onClick={() => {
+                  setPendingJoinRoom(null);
+                  urlRoomRef.current = null;
+                  setView("home");
+                }}
+              >
+                Back
+              </button>
+              {error ? <p className="error">⚠️ {error}</p> : null}
+            </div>
+          </div>
+        </header>
+      </div>
+    );
+  };
+
+  const renderPlayerCards = (options?: { showKick?: boolean }) => {
+    const allowKick = !!update?.you.isHost && update?.game.phase === "lobby";
+    const showKick = options?.showKick ?? allowKick;
+    return (
     <div className="player-grid">
       {update?.game.players.map((player) => {
         const isYou = update.you.playerId === player.playerId;
@@ -698,11 +865,17 @@ function App() {
                 Vote
               </button>
             ) : null}
+            {showKick && allowKick && !isYou ? (
+              <button className="button ghost small" type="button" onClick={() => kickPlayer(player.playerId)}>
+                Kick
+              </button>
+            ) : null}
           </div>
         );
       })}
     </div>
   );
+  };
 
   const renderNightPanel = () => {
     if (!update?.game.night) return null;
@@ -713,25 +886,24 @@ function App() {
       (role === "mason" && update.you.originalRole === "mason") ||
       (role === "minion" && update.you.originalRole === "minion");
     const script: Record<Role, string> = {
-      werewolf:
-        "Werewolves, wake up and look for other werewolves. If alone, you may view one center card. Werewolves, close your eyes.",
-      minion: "Minion, wake up. Werewolves, put your thumbs up so the minion can see you. Minion, close your eyes.",
-      mason: "Masons, wake up and look for other masons. Masons, close your eyes.",
-      seer: "Seer, wake up. View a player's card or two center cards. Seer, close your eyes.",
-      robber: "Robber, wake up. Swap your card with another player's and view your new card. Robber, close your eyes.",
-      troublemaker: "Troublemaker, wake up. Swap two other players' cards. Troublemaker, close your eyes.",
-      insomniac: "Insomniac, wake up and look at your card. Insomniac, close your eyes.",
-      villager: "",
+      werewolf: "Werewolves, open your eyes. If you are alone, you will view one center card.",
+      minion: "Minion, open your eyes and see the werewolves.",
+      mason: "Masons, open your eyes and see each other.",
+      seer: "Seer, you may view one player's card or two center cards.",
+      robber: "Robber, you may swap your card with another player's and then view your new role.",
+      troublemaker: "Troublemaker, you may swap two other players.",
+      insomniac: "Insomniac, you will view your final role.",
+      villager: "Villagers, you have no night action.",
     };
     const renderActions = () => {
     switch (role) {
-      case "seer":
-        return (
-          <div className="stack">
-            <p className="lede">Tap a player card to view it, or tap two center cards to peek them.</p>
+        case "seer":
+          return (
+            <div className="stack">
+              <p className="lede">Press Start, then tap a player or two center cards to view them.</p>
               {isYourStep ? (
                 <button className="button primary" type="button" onClick={() => armActionForRole("seer")}>
-                  Start action
+                  Start
                 </button>
               ) : null}
             </div>
@@ -739,10 +911,10 @@ function App() {
         case "robber":
           return (
             <div className="stack">
-              <p className="lede">Tap a player card to swap with them and see your new role.</p>
+              <p className="lede">Press Start, then tap a player to swap and view your new role.</p>
               {isYourStep ? (
                 <button className="button primary" type="button" onClick={() => armActionForRole("robber")}>
-                  Start action
+                  Start
                 </button>
               ) : null}
             </div>
@@ -750,10 +922,10 @@ function App() {
         case "troublemaker":
           return (
             <div className="stack">
-              <p className="lede">Tap two different player cards in order to swap their roles.</p>
+              <p className="lede">Press Start, then tap two players to swap.</p>
               {isYourStep ? (
                 <button className="button primary" type="button" onClick={() => armActionForRole("troublemaker")}>
-                  Start action
+                  Start
                 </button>
               ) : null}
             </div>
@@ -761,7 +933,7 @@ function App() {
         case "mason":
           return (
             <div className="stack">
-              <p className="lede">Look for the other mason. Tap acknowledge once you have seen them.</p>
+              <p className="lede">Press Start to see any other mason.</p>
               {isYourStep ? (
                 <button
                   className="button primary"
@@ -771,7 +943,7 @@ function App() {
                     setNightPromptOpen(false);
                   }}
                 >
-                  Acknowledge
+                  Start
                 </button>
               ) : null}
             </div>
@@ -779,9 +951,7 @@ function App() {
         case "minion":
           return (
             <div className="stack">
-              <p className="lede">
-                Watch for pulsing werewolves. Their names will show once revealed. Tap start to continue.
-              </p>
+              <p className="lede">Press Start to reveal the werewolves.</p>
               {isYourStep ? (
                 <button
                   className="button primary"
@@ -808,19 +978,9 @@ function App() {
           return (
             <div className="stack">
               {solo ? (
-                <p className="lede">You are the only werewolf. You may peek one center card.</p>
+                <p className="lede">You are alone. Press Start, then tap one center card to view it.</p>
               ) : (
-                <div className="pill-row">
-                  <span className="pill">Other werewolves:</span>
-                  {wolfList.map((id) => {
-                    const wolf = update.game.players.find((p) => p.playerId === id);
-                    return (
-                      <span key={id} className="pill accent">
-                        {wolf?.name ?? "Werewolf"}
-                      </span>
-                    );
-                  })}
-                </div>
+                <p className="lede">Press Start to see the other werewolves.</p>
               )}
               {isYourStep ? (
                 <button
@@ -839,7 +999,7 @@ function App() {
                     }
                   }}
                 >
-                  {solo ? "Start action" : "Got it"}
+                  Start
                 </button>
               ) : null}
             </div>
@@ -847,10 +1007,20 @@ function App() {
         case "insomniac":
           return (
             <div className="stack">
-              <p className="lede">Tap your own card to peek your final role.</p>
+              <p className="lede">Press Start to view your final role.</p>
               {isYourStep ? (
-                <button className="button primary" type="button" onClick={() => armActionForRole("insomniac")}>
-                  Start action
+                <button
+                  className="button primary"
+                  type="button"
+                  onClick={() => {
+                    setNightPromptOpen(false);
+                    socket.emit("night:insomniac:peekFinal", {
+                      roomCode: update.roomCode,
+                      playerId: update.you.playerId,
+                    });
+                  }}
+                >
+                  Start
                 </button>
               ) : null}
             </div>
@@ -887,7 +1057,7 @@ function App() {
         </div>
         <div className="panel-body">
           <p className="lede">{script[role]}</p>
-          {!isYourStep ? <div className="overlay-callout">Keep eyes closed</div> : renderActions()}
+          {!isYourStep ? <div className="overlay-callout">Wait for your turn.</div> : renderActions()}
         </div>
       </div>
     );
@@ -903,21 +1073,13 @@ function App() {
               {update.you.isHost ? (
                 <div className="stack">
                   <p className="lede">Pick the deck and start when everyone is ready.</p>
-                  <div className="pill-row">
-                    <span className="pill info-pill" onClick={copyRoom}>
-                      Room {update.roomCode}
-                      <button className="icon-button" type="button" aria-label="Copy room code">
-                        📋
-                      </button>
-                      {copyStatus === "copied" ? <span className="pill small success">Copied</span> : null}
-                      {copyStatus === "error" ? <span className="pill small error-pill">Failed</span> : null}
-                    </span>
-                  </div>
+                  {renderShareInvite()}
                   <div className="role-grid">
                     {allowedRoles.map((role) => {
                       const count = roleCounts[role];
                       const cap = ROLE_CAPS[role];
                       const capReached = count >= cap;
+                      const maxedOverall = countsToArray(roleCounts).length >= requiredRoles;
                       return (
                         <div key={role} className="role-chip">
                           <span className="pill small">{role}</span>
@@ -941,7 +1103,7 @@ function App() {
                                 if (capReached) return;
                                 setRoleCounts((prev) => ({ ...prev, [role]: Math.min(cap, prev[role] + 1) }));
                               }}
-                              disabled={capReached}
+                              disabled={capReached || maxedOverall}
                             >
                               +
                             </button>
@@ -957,11 +1119,22 @@ function App() {
                       Roles: {countsToArray(roleCounts).length}/{requiredRoles}
                     </span>
                   </div>
-              <div className="panel-body players-inline">{renderPlayerCards()}</div>
-              <div className="cta-row wrap">
-                <button
-                  className="button primary"
-                  type="button"
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={autoAdvanceNight}
+                      onChange={(e) => setAutoAdvanceNight(e.target.checked)}
+                    />
+                    <span className="toggle-track">
+                      <span className="toggle-thumb" />
+                    </span>
+                    <span className="toggle-label">Auto-advance night steps</span>
+                  </label>
+                  <div className="panel-body players-inline">{renderPlayerCards({ showKick: true })}</div>
+                  <div className="cta-row wrap">
+                    <button
+                      className="button primary"
+                      type="button"
                       onClick={() => {
                         socket.emit("host:updateRoles", {
                           roomCode: update.roomCode,
@@ -970,34 +1143,25 @@ function App() {
                         });
                         startGame();
                       }}
-                  disabled={!canStart || update.game.players.length < 3}
-                >
-                  Start game
-                </button>
-                <button className="button ghost small" type="button" onClick={endGame}>
-                  End game
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="stack">
-              <p className="lede">Waiting for host to pick roles and start. Ready up when you&rsquo;re set.</p>
-                  <div className="pill-row">
-                    <span className="pill info-pill" onClick={copyRoom}>
-                      Room {update.roomCode}
-                      <button className="icon-button" type="button" aria-label="Copy room code">
-                        📋
-                      </button>
-                      {copyStatus === "copied" ? <span className="pill small success">Copied</span> : null}
-                      {copyStatus === "error" ? <span className="pill small error-pill">Failed</span> : null}
-                    </span>
+                      disabled={!canStart || update.game.players.length < 3}
+                    >
+                      Start game
+                    </button>
+                    <button className="button ghost small" type="button" onClick={endGame}>
+                      End game
+                    </button>
                   </div>
-              <button className="button" type="button" onClick={toggleReady}>
-                {lobbyPlayer?.ready ? "Unready" : "Ready"}
-              </button>
-              <button className="button ghost small" type="button" onClick={leaveGame}>
-                Leave lobby
-              </button>
+                </div>
+              ) : (
+                <div className="stack">
+                  <p className="lede">Waiting for host to pick roles and start. Ready up when you&rsquo;re set.</p>
+                  {renderShareInvite()}
+                  <button className="button" type="button" onClick={toggleReady}>
+                    {lobbyPlayer?.ready ? "Unready" : "Ready"}
+                  </button>
+                  <button className="button ghost small" type="button" onClick={leaveGame}>
+                    Leave lobby
+                  </button>
                   <div className="pill-row">
                     <span className="pill">Players: {update.game.players.length}</span>
                     <span className="pill">Ready: {update.game.players.filter((p) => p.ready).length}</span>
@@ -1044,35 +1208,47 @@ function App() {
         );
       case "night":
         if (nightPromptOpen) {
+          const role = update.game.night?.stepRole;
+          const isYourStep =
+            role === update.you.originalRole ||
+            (role === "werewolf" && update.you.originalRole === "werewolf") ||
+            (role === "mason" && update.you.originalRole === "mason") ||
+            (role === "minion" && update.you.originalRole === "minion");
+          const isSoloWerewolf =
+            role === "werewolf" &&
+            update.private?.kind === "werewolfSawWerewolves" &&
+            update.private.werewolfIds.length === 0;
           return (
             <div className="overlay">
               <div className="overlay-card">
                 {renderNightPanel()}
                 <div className="row wrap host-inline-cta">
                   {update.you.isHost ? (
-                    <button className="button primary small" type="button" onClick={advanceNight}>
+                    <button
+                      className="button primary small"
+                      type="button"
+                      onClick={advanceNight}
+                      disabled={nightCountdown > 0}
+                    >
                       Next step
                     </button>
                   ) : null}
-                  <button
-                    className="button ghost small"
-                    type="button"
-                    onClick={() => {
-                      const role = update.game.night?.stepRole;
-                      const isYourStep =
-                        role === update.you.originalRole ||
-                        (role === "werewolf" && update.you.originalRole === "werewolf") ||
-                        (role === "mason" && update.you.originalRole === "mason") ||
-                        (role === "minion" && update.you.originalRole === "minion");
-                      if (isYourStep && role) {
-                        armActionForRole(role, { soloWerewolf: role === "werewolf" && isSoloWerewolf });
-                      } else {
-                        setNightPromptOpen(false);
-                      }
-                    }}
-                  >
-                    {update.game.night?.stepRole === update.you.originalRole ? "Start" : "Continue"}
-                  </button>
+                  {isYourStep &&
+                  role &&
+                  role !== "werewolf" &&
+                  role !== "mason" &&
+                  role !== "robber" &&
+                  role !== "troublemaker" &&
+                  role !== "insomniac" &&
+                  role !== "minion" ? (
+                    <button
+                      className="button primary"
+                      type="button"
+                      onClick={() => armActionForRole(role, { soloWerewolf: role === "werewolf" && isSoloWerewolf })}
+                    >
+                      Start
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1080,10 +1256,16 @@ function App() {
         }
         return null;
       case "reveal":
+        if (!showRevealOverlay) return null;
         return (
           <div className="overlay">
             <div className="overlay-card">
-              <h3>Reveal</h3>
+              <div className="panel-head">
+                <h3>Reveal</h3>
+                <button className="icon-button" type="button" onClick={() => setShowRevealOverlay(false)}>
+                  ✕
+                </button>
+              </div>
               {renderRevealPanel()}
               {update.you.isHost ? (
                 <div className="row wrap host-inline-cta">
@@ -1102,6 +1284,10 @@ function App() {
 
   const renderTokensPanel = () => {
     if (!update || (update.game.phase !== "discussion" && update.game.phase !== "voting")) return null;
+    const roleOptions =
+      update.game.roleSelection?.length > 0
+        ? Array.from(new Set(update.game.roleSelection))
+        : allowedRoles;
     const markSuspect = (targetId: string, role: Role) => {
       socket.emit("discussion:token:add", {
         roomCode: update.roomCode,
@@ -1135,7 +1321,7 @@ function App() {
                   <div className="token-controls">
                     <select value={suspectRole} onChange={(e) => markSuspect(player.playerId, e.target.value as Role)}>
                       <option value="">Pick role</option>
-                      {allowedRoles.map((role) => (
+                      {roleOptions.map((role) => (
                         <option key={role} value={role}>
                           {role}
                         </option>
@@ -1205,7 +1391,12 @@ function App() {
           <button className="button" type="button" onClick={startNight}>
             Start night
           </button>
-          <button className="button" type="button" onClick={advanceNight}>
+          <button
+            className="button"
+            type="button"
+            onClick={advanceNight}
+            disabled={update.game.phase === "night" && nightCountdown > 0}
+          >
             Advance night
           </button>
           <button className="button" type="button" onClick={startVoting}>
@@ -1252,6 +1443,9 @@ function App() {
   };
 
   if (!update) {
+    if (pendingJoinRoom && !sessionRef.current) {
+      return renderInviteJoin();
+    }
     return view === "configure" ? renderLanding() : renderLanding();
   }
 
@@ -1272,19 +1466,20 @@ function App() {
     };
     const highlightIds = new Set<string>();
     const highlightLabels = new Map<string, string>();
+    const canRevealNightInfo = update.game.phase !== "night" || !nightPromptOpen;
     if (update.private?.kind === "minionSawWerewolves") {
       update.private.werewolfIds.forEach((id) => {
         highlightIds.add(id);
         highlightLabels.set(id, "Werewolf");
       });
     }
-    if (update.private?.kind === "werewolfSawWerewolves") {
+    if (canRevealNightInfo && update.private?.kind === "werewolfSawWerewolves") {
       update.private.werewolfIds.forEach((id) => {
         highlightIds.add(id);
         highlightLabels.set(id, "Werewolf");
       });
     }
-    if (update.private?.kind === "masonSawMasons") {
+    if (canRevealNightInfo && update.private?.kind === "masonSawMasons") {
       update.private.masonIds.forEach((id) => {
         highlightIds.add(id);
         highlightLabels.set(id, "Mason");
@@ -1296,6 +1491,11 @@ function App() {
     }
     if (update.private?.kind === "werewolfSoloPeek") {
       revealedCenter.set(update.private.centerIndex, update.private.role);
+    }
+    if (update.game.phase === "reveal" && update.game.reveal?.centerRoles?.length) {
+      update.game.reveal.centerRoles.forEach((role, idx) => {
+        if (role) revealedCenter.set(idx, role);
+      });
     }
     const revealedPlayer =
       update.private?.kind === "seerViewPlayer"
@@ -1361,12 +1561,16 @@ function App() {
         return;
       }
       if (update.game.phase === "discussion") {
-        if (playerId === update.you.playerId) return;
         setSuspectTargetId(playerId);
       }
     };
 
     const handleCenterClick = (index: number) => {
+      const targetId = `center-${index}`;
+      if (update.game.phase === "discussion") {
+        setSuspectTargetId(targetId);
+        return;
+      }
       if (!activeAction || update.game.phase !== "night") return;
       switch (activeAction.role) {
         case "seer": {
@@ -1432,7 +1636,6 @@ function App() {
 
     const handleDropOn = (targetId: string) => (e: DragEvent) => {
       e.preventDefault();
-      if (targetId === update.you.playerId) return;
       socket.emit("discussion:token:add", {
         roomCode: update.roomCode,
         playerId: update.you.playerId,
@@ -1450,20 +1653,58 @@ function App() {
 
     const renderCenterCards = (mode: "grid" | "cluster") => (
       <div className={`center-cards ${mode === "grid" ? "row" : "triangle"}`}>
-        {[0, 1, 2].map((idx) => (
-          <div
-            key={idx}
-            className={`card-slot center ${
-              activeAction?.role === "seer" || activeAction?.role === "werewolf-solo" ? "actionable" : ""
-            } ${mode === "triangle" ? `c${idx}` : ""}`}
-            onClick={() => handleCenterClick(idx)}
-          >
+        {[0, 1, 2].map((idx) => {
+          const targetId = `center-${idx}`;
+          const visibleRole =
+            revealedCenter.get(idx) ??
+            (update.game.phase === "reveal" ? update.game.reveal?.centerRoles?.[idx] : undefined);
+          const faceState = visibleRole ? "up" : "down";
+          const centerSuspects = suspicionFor(targetId);
+          const centerTokens: Role[] = [];
+          centerSuspects.forEach(([role, count]) => {
+            for (let i = 0; i < count; i += 1) centerTokens.push(role as Role);
+          });
+          const centerSuspectRole =
+            update.game.tokens?.suspectRolesByPlayer?.[update.you.playerId]?.[targetId];
+          if (!centerTokens.length && centerSuspectRole) {
+            centerTokens.push(centerSuspectRole);
+          }
+          return (
             <div
-              className={`card-face ${revealedCenter.has(idx) ? "up" : "down"}`}
-              style={faceStyle(revealedCenter.get(idx), revealedCenter.has(idx) ? "up" : "down")}
-            />
-          </div>
-        ))}
+              key={idx}
+              className={`card-slot center ${
+                activeAction?.role === "seer" || activeAction?.role === "werewolf-solo" ? "actionable" : ""
+              } ${mode === "triangle" ? `c${idx}` : ""}`}
+              onClick={() => handleCenterClick(idx)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDropOn(targetId)}
+            >
+              <div
+                className={`card-face ${faceState} ${centerTokens.length ? "suspect-marked" : ""}`}
+                style={faceStyle(visibleRole, faceState as "up" | "down")}
+              >
+                {visibleRole ? <div className="card-label">{visibleRole}</div> : null}
+                {centerTokens.length ? (
+                  <div className="suspect-tokens">
+                    {centerTokens.map((role, tokenIdx) => {
+                      const focus = roleFocus[role] ?? { x: "50%", y: "50%" };
+                      return (
+                        <div
+                          key={`${role}-${tokenIdx}`}
+                          className="role-token"
+                          style={{
+                            backgroundImage: `url(${roleImage(role)})`,
+                            backgroundPosition: `${focus.x} ${focus.y}`,
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
 
@@ -1474,6 +1715,7 @@ function App() {
       pos: { left?: string; top?: string } = {}
     ) => {
       const isYou = update.you.playerId === player.playerId;
+      const revealedRole = update.game.phase === "reveal" ? update.game.reveal?.finalRoles?.[player.playerId] : undefined;
       const suspectRole = update.game.tokens?.suspectRolesByPlayer?.[update.you.playerId]?.[player.playerId];
       const totalTokens = totalTokensOnTarget(player.playerId);
       const suspects = suspicionFor(player.playerId);
@@ -1499,6 +1741,22 @@ function App() {
       const voteTally = update.game.voting?.tally?.[player.playerId] ?? 0;
       const youVotedHere = selectedVoteId === player.playerId;
 
+      const faceUpRole =
+        revealedRole ??
+        (isYou && myFaceUp ? myCurrentRole ?? update.you.originalRole : undefined) ??
+        (revealedPlayer?.id === player.playerId ? revealedPlayer.role : undefined);
+      const faceClass =
+        faceUpRole || revealedPlayer?.id === player.playerId || revealedRole ? "up" : isYou && myFaceUp ? "up" : "down";
+
+      const tokens: Role[] = [];
+      suspects.forEach(([role, count]) => {
+        for (let i = 0; i < count; i += 1) tokens.push(role as Role);
+      });
+      if (!tokens.length && suspectRole) {
+        tokens.push(suspectRole);
+      }
+      const hasTokens = tokens.length > 0;
+
       return (
         <div
           key={player.playerId}
@@ -1512,96 +1770,66 @@ function App() {
         >
           <div className="card-slot">
             <div
-              className={`card-face ${isYou && myFaceUp ? "up" : "down"} ${
-                revealedPlayer?.id === player.playerId ? "up" : ""
-              }`}
-              style={
-                isYou
-                  ? faceStyle(myCurrentRole ?? update.you.originalRole, myFaceUp ? "up" : "down")
-                  : revealedPlayer?.id === player.playerId
-                  ? faceStyle(revealedPlayer.role, "up")
-                  : faceStyle(undefined, "down")
-              }
+              className={`card-face ${faceClass} ${hasTokens ? "suspect-marked" : ""}`}
+              style={faceStyle(faceUpRole, faceClass === "up" ? "up" : "down")}
             >
-              {suspectRole ? <div className="card-role">{suspectRole}</div> : null}
-            </div>
-          </div>
-          <div className="card-footer">
-            <div className="pill tiny">{isYou ? `${player.name} (You)` : player.name}</div>
-            {highlightLabels.get(player.playerId) ? (
-              <div className="highlight-tag">{highlightLabels.get(player.playerId)}</div>
-            ) : null}
-          </div>
-          {totalTokens > 0 ? <div className="token-bubble">{totalTokens}</div> : null}
-          {update.game.phase === "voting" ? (
-            <div className="vote-badge">
-              <span>{voteTally}</span>
-              {youVotedHere ? <span className="pill tiny">Your vote</span> : null}
-            </div>
-          ) : null}
-          {suspects.length ? (
-            <div className="suspect-chips">
-              {suspects.map(([role, count]) => (
-                <span key={role} className="pill tiny">
-                  {role} {count > 1 ? `x${count}` : ""}
-                </span>
-              ))}
+          {suspectRole ? <div className="card-role">{suspectRole}</div> : null}
+          {faceUpRole ? <div className="card-label">{faceUpRole}</div> : null}
+          {tokens.length ? (
+            <div className="suspect-tokens">
+              {tokens.map((role, idx) => {
+                const focus = roleFocus[role] ?? { x: "50%", y: "50%" };
+                return (
+                  <div
+                    key={`${role}-${idx}`}
+                    className="role-token"
+                    style={{
+                      backgroundImage: `url(${roleImage(role)})`,
+                      backgroundPosition: `${focus.x} ${focus.y}`,
+                    }}
+                  />
+                );
+              })}
             </div>
           ) : null}
         </div>
-      );
-    };
+      </div>
+      <div className="card-footer">
+        <div className="pill tiny">{isYou ? `${player.name} (You)` : player.name}</div>
+        {highlightLabels.get(player.playerId) ? (
+          <div className="highlight-tag">{highlightLabels.get(player.playerId)}</div>
+        ) : null}
+      </div>
+      {update.game.phase === "voting" ? (
+        <div className="vote-badge">
+          <span>{voteTally}</span>
+          {youVotedHere ? <span className="pill tiny">Your vote</span> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+};
 
     const players = update.game.players;
-    const playerCount = players.length;
-    const isCompact = viewport.w < 900 || viewport.h < 700;
-    let body: JSX.Element | null = null;
+    const compactGrid = viewport.w < 700 || viewport.h < 600;
 
-    if (isCompact) {
-      const cols = playerCount > 6 ? 3 : 2;
-      body = (
-        <div className="table table-grid">
-          <div className="table-center">
-            <div className="center-row">{renderCenterCards("grid")}</div>
-          </div>
-          <div className={`seats-grid cols-${cols}`}>
-            {players.map((player, idx) => renderSeat(player, idx, "grid", {}))}
-          </div>
+    const playerCount = players.length;
+    const manyPlayers = playerCount >= 9;
+    const midPlayers = !manyPlayers && playerCount >= 6;
+    const body = (
+      <div className="table table-grid">
+        <div className="table-center">
+          <div className="center-row">{renderCenterCards("grid")}</div>
         </div>
-      );
-    } else {
-      // Replaced absolute/polar seat positioning with a responsive surround grid
-      const quads = { top: [] as Player[], right: [] as Player[], bottom: [] as Player[], left: [] as Player[] };
-      players.forEach((p, idx) => {
-        switch (idx % 4) {
-          case 0:
-            quads.top.push(p);
-            break;
-          case 1:
-            quads.right.push(p);
-            break;
-          case 2:
-            quads.bottom.push(p);
-            break;
-          default:
-            quads.left.push(p);
-            break;
-        }
-      });
-      body = (
-        <div className="table table-surround">
-          <div className="surround top-band">{quads.top.map((p, idx) => renderSeat(p, idx, "band", {}))}</div>
-          <div className="surround middle-band">
-            <div className="side left-band">{quads.left.map((p, idx) => renderSeat(p, idx, "band", {}))}</div>
-            <div className="table-center">
-              <div className="center-row">{renderCenterCards("cluster")}</div>
-            </div>
-            <div className="side right-band">{quads.right.map((p, idx) => renderSeat(p, idx, "band", {}))}</div>
-          </div>
-          <div className="surround bottom-band">{quads.bottom.map((p, idx) => renderSeat(p, idx, "band", {}))}</div>
+        <div
+          className={`seats-grid seats-auto ${compactGrid ? "compact" : ""} ${
+            manyPlayers ? "many" : midPlayers ? "mid" : ""
+          }`}
+        >
+          {players.map((player, idx) => renderSeat(player, idx, "grid", {}))}
         </div>
-      );
-    }
+      </div>
+    );
 
     return (
       <>
@@ -1633,7 +1861,10 @@ function App() {
               }}
             >
               <option value="">Pick role</option>
-              {allowedRoles.map((role) => (
+              {(update.game.roleSelection?.length
+                ? Array.from(new Set(update.game.roleSelection))
+                : allowedRoles
+              ).map((role) => (
                 <option key={role} value={role}>
                   {role}
                 </option>
@@ -1650,16 +1881,59 @@ function App() {
   };
 
   const copyRoom = async () => {
+    if (!update) return;
+    const shareUrl = `${window.location.origin}${window.location.pathname}?room=${update.roomCode}`;
+    const sharePayload = {
+      title: "Werewolf game invite",
+      text: `Join my Werewolf game`,
+      url: shareUrl,
+    };
     try {
-      await navigator.clipboard.writeText(update.roomCode);
-      console.log("Copied room code");
+      if (navigator.share && typeof navigator.share === "function") {
+        await navigator.share(sharePayload);
+      } else if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = shareUrl;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
       setCopyStatus("copied");
       setTimeout(() => setCopyStatus("idle"), 1200);
     } catch (err) {
-      console.error("Copy failed", err);
+      console.error("Share/copy failed", err);
       setCopyStatus("error");
       setTimeout(() => setCopyStatus("idle"), 1200);
     }
+  };
+
+  const getShareUrl = () =>
+    update ? `${window.location.origin}${window.location.pathname}?room=${update.roomCode}` : "";
+
+  const renderShareInvite = () => {
+    if (!update) return null;
+    const shareUrl = getShareUrl();
+    return (
+      <div className="pill-row">
+        <div className="pill info-pill share-pill">
+          <span>Room</span>
+          <a className="share-link" href={shareUrl} target="_blank" rel="noreferrer">
+            {update.roomCode}
+          </a>
+          <button className="button ghost small" type="button" onClick={copyRoom}>
+            Copy link
+          </button>
+          {copyStatus === "copied" ? <span className="pill small success">Copied</span> : null}
+          {copyStatus === "error" ? <span className="pill small error-pill">Copy failed</span> : null}
+        </div>
+      </div>
+    );
   };
 
   const closeMenu = () => setMenuOpen(false);
@@ -1671,6 +1945,49 @@ function App() {
           <div className="panel-body">{renderTable()}</div>
         </section>
       </main>
+      {joinModalOpen ? (
+        <div className="overlay">
+          <div className="overlay-card">
+            <h3>Join game</h3>
+            <p className="lede">
+              Enter your name to join room {pendingJoinRoom ?? urlRoomRef.current ?? ""}
+            </p>
+            <div className="field">
+              <label>Your name</label>
+              <input
+                value={pendingJoinName}
+                onChange={(e) => setPendingJoinName(e.target.value)}
+                placeholder="Your name"
+              />
+            </div>
+            <div className="row wrap">
+              <button
+                className="button primary"
+                type="button"
+                onClick={() =>
+                  joinRoom({
+                    room: pendingJoinRoom ?? urlRoomRef.current ?? "",
+                    playerName: pendingJoinName || name || "Player",
+                  })
+                }
+                disabled={!(pendingJoinRoom ?? urlRoomRef.current)}
+              >
+                Join game
+              </button>
+              <button
+                className="button ghost"
+                type="button"
+                onClick={() => {
+                  setJoinModalOpen(false);
+                  joinPromptedRef.current = true;
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="table-info">
         <div className="info-spacer" />
         <div className="phase-chip">
@@ -1691,7 +2008,10 @@ function App() {
             className="button primary small"
             type="button"
             onClick={hostProgress}
-            disabled={update.game.phase === "lobby" && (!canStart || update.game.players.length < 3)}
+            disabled={
+              (update.game.phase === "lobby" && (!canStart || update.game.players.length < 3)) ||
+              (update.game.phase === "night" && nightCountdown > 0)
+            }
           >
             {hostButtonLabel()}
           </button>
@@ -1773,7 +2093,7 @@ function App() {
                   >
                     Start game ({countsToArray(roleCounts).length}/{requiredRoles})
                   </button>
-                  <div className="panel-body players-inline">{renderPlayerCards()}</div>
+                  <div className="panel-body players-inline">{renderPlayerCards({ showKick: true })}</div>
                 </div>
               ) : null}
               {update.game.phase !== "lobby" ? <div className="panel-body players-inline">{renderPlayerCards()}</div> : null}
