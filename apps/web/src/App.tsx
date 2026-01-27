@@ -3,6 +3,14 @@ import { io, Socket } from "socket.io-client";
 import { Phase, PrivateView, Role } from "@werewolf/shared";
 import "./index.css";
 
+declare global {
+  interface Window {
+    __ENV__?: {
+      SERVER_URL?: string;
+    };
+  }
+}
+
 type PublicPlayer = {
   playerId: string;
   name: string;
@@ -68,9 +76,13 @@ type GameUpdatePayload = {
   private?: PrivateView;
 };
 
-const socketUrl = (typeof window !== "undefined" && window.location.origin) || "http://localhost:4000";
+const socketUrl =
+  (typeof window !== "undefined" && window.__ENV__?.SERVER_URL) ||
+  import.meta.env.VITE_SERVER_URL ||
+  (typeof window !== "undefined" && window.location.origin) ||
+  "http://localhost:4000";
 const createSocket = () =>
-  io(import.meta.env.VITE_SERVER_URL || socketUrl, {
+  io(socketUrl, {
     transports: ["polling"],
     upgrade: false,
     reconnectionAttempts: 5,

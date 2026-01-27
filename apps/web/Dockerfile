@@ -25,6 +25,8 @@ RUN npm --prefix apps/web run build
 FROM nginx:alpine
 
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY apps/web/etc/99-env.sh /docker-entrypoint.d/99-env.sh
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+RUN chmod +x /docker-entrypoint.d/99-env.sh
 
 EXPOSE 80
