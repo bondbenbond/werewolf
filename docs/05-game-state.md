@@ -60,8 +60,9 @@ export type CenterIndex = 0 | 1 | 2;
 ### Night Order (v1)
 ```ts
 export const NIGHT_ORDER: Role[] = [
-  "minion",
   "werewolf",
+  "minion",
+  "mason",
   "seer",
   "robber",
   "troublemaker",
@@ -118,6 +119,8 @@ export type GameSettings = {
   // suspicion tokens
   tokensEnabled: boolean;          // default true
   tokensPerPlayerLimit: number;    // default 3
+  autoAdvanceNight: boolean;       // default true
+  parallelNight: boolean;          // default false
 };
 ```
 
@@ -195,8 +198,10 @@ Night requires:
 ```ts
 export type NightState = {
   stepIndex: number;           // index into NIGHT_ORDER
-  stepRole: Role;              // NIGHT_ORDER[stepIndex]
+  stepRole: Role | null;       // NIGHT_ORDER[stepIndex] (null when parallel)
   totalSteps: number;          // NIGHT_ORDER.length
+  endsAt?: number;             // epoch ms for step countdown (optional)
+  mode?: "sequential" | "parallel";
 
   // completionByPlayer[playerId] = true if player submitted for this step
   completionByPlayer: Record<string, boolean>;
@@ -253,7 +258,7 @@ export type Winners = "village" | "werewolves";
 export type RevealState = {
   // computed and then persisted during reveal phase
   tally: Record<string, number>;           // targetPlayerId -> votes
-  eliminatedPlayerId?: string;             // optional if tie/no-elimination rule later
+  eliminatedPlayerIds: string[];           // empty if tie/no elimination
   winners: Winners;
 
   // final roles exposed during reveal
@@ -284,6 +289,7 @@ export type GameState = {
   gameName?: string;
 
   phase: Phase;
+  phaseEndsAt?: number; // epoch ms for timed phases like discussion/voting
 
   // host
   hostPlayerId: string;
@@ -339,7 +345,9 @@ export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: Role }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
+  | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
+  | { kind: "werewolfSoloStatus"; isSolo: boolean }
   | { kind: "werewolfSoloPeek"; centerIndex: CenterIndex; role: Role }
   | { kind: "seerViewPlayer"; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: CenterIndex; role: Role }> }
@@ -364,8 +372,8 @@ These functions should exist server-side (pure helpers):
 - `applyRobberSwap(state, robberId, targetId)`
 - `applyTroublemakerSwap(state, aId, bId)`
 - `computeVoteTally(state): Record<targetId, count>`
-- `computeElimination(tally): eliminatedPlayerId?`
-- `computeWinners(state, eliminatedPlayerId): Winners`
+- `computeEliminations(tally): string[]`
+- `computeWinners(state, eliminatedPlayerIds): Winners`
 
 ---
 

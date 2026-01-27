@@ -13,6 +13,7 @@ type PublicPlayer = {
 
 type RoomPublicState = {
   phase: Phase;
+  phaseEndsAt?: number;
   gameName?: string;
   maxPlayers: number;
   hostPlayerId: string;
@@ -25,6 +26,8 @@ type RoomPublicState = {
     showActionLogOnReveal: boolean;
     tokensEnabled: boolean;
     tokensPerPlayerLimit: number;
+    autoAdvanceNight: boolean;
+    parallelNight: boolean;
   };
   dealAcks?: Record<string, boolean>;
   night?: {
@@ -32,6 +35,8 @@ type RoomPublicState = {
     completedThisStep: Record<string, boolean>;
     stepIndex: number;
     totalSteps: number;
+    endsAt?: number;
+    mode?: "sequential" | "parallel";
   };
   tokens?: {
     tokensByPlayer: Record<string, Record<string, number>>;
@@ -42,7 +47,7 @@ type RoomPublicState = {
     tally?: Record<string, number>;
   };
   reveal?: {
-    eliminatedPlayerId?: string;
+    eliminatedPlayerIds?: string[];
     winners?: "village" | "werewolves";
     finalRoles?: Record<string, Role>;
     centerRoles?: Role[];
@@ -128,10 +133,51 @@ function App() {
   const [roleCounts, setRoleCounts] = useState<Record<Role, number>>(recommendedCounts);
   const countsToArray = (counts: Record<Role, number>): Role[] =>
     Object.entries(counts).flatMap(([role, count]) => Array(count).fill(role as Role));
+  const roleOrder: Partial<Record<Role, number>> = {
+    werewolf: 1,
+    minion: 2,
+    mason: 3,
+    seer: 4,
+    robber: 5,
+    troublemaker: 6,
+    insomniac: 7,
+  };
+  const toTitleCase = (value: string) =>
+    value
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .split("-")
+      .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+      .join(" ");
+  const displayRole = (role?: Role) => (role ? toTitleCase(role) : role);
+  const roleLabel = (role: Role) =>
+    roleOrder[role] ? `${roleOrder[role]} ${toTitleCase(role)}` : toTitleCase(role);
+  const multiTokenRoles = new Set<Role>(["villager", "werewolf", "mason"]);
+  const formatCountdown = (seconds: number) => {
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(safeSeconds / 60);
+    const remaining = safeSeconds % 60;
+    return `${minutes}:${String(remaining).padStart(2, "0")}`;
+  };
+  const handleEnter = (event: React.KeyboardEvent<HTMLInputElement>, action: () => void) => {
+    if (event.key === "Enter") {
+      action();
+    }
+  };
+  const renderRoleCard = (role: Role) => (
+    <div className="result-card">
+      {roleImage(role) ? (
+        <img src={roleImage(role)} alt={role} />
+      ) : (
+        <div className="card-face up" style={faceStyle(role, "up")} />
+      )}
+      <div className="card-role under-card">{displayRole(role)}</div>
+    </div>
+  );
 
   // Night action selections
   // Night selections now driven by table taps; no manual inputs needed here.
   const [nightCountdown, setNightCountdown] = useState(0);
+  const [phaseCountdown, setPhaseCountdown] = useState(0);
   const [view, setView] = useState<"home" | "configure" | "game">("home");
   const sessionRef = useRef<{ roomCode: string; playerId: string; resumeSecret: string } | null>(null);
   const urlRoomRef = useRef<string | null>(null);
@@ -154,7 +200,11 @@ function App() {
   const [activeAction, setActiveAction] = useState<ActiveAction>(null);
   const [toast, setToast] = useState<{ message: string; id: number } | null>(null);
   const [suspectTargetId, setSuspectTargetId] = useState<string | null>(null);
+  const suspectSelectRefs = useRef<Record<string, HTMLSelectElement | null>>({});
+  const roleSelectionKeyRef = useRef<string | null>(null);
+  const [parallelAwaitingResult, setParallelAwaitingResult] = useState(false);
   const nightStepKeyRef = useRef<string | null>(null);
+  const troublemakerPicksRef = useRef<string[]>([]);
   const [selectedVoteId, setSelectedVoteId] = useState<string | null>(null);
   const [showRevealOverlay, setShowRevealOverlay] = useState(true);
   const cardBackSrc = "/assets/cards/card-back.jpeg";
@@ -173,7 +223,18 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
   const [myFaceUp, setMyFaceUp] = useState(true);
   const [viewport, setViewport] = useState({ w: typeof window !== "undefined" ? window.innerWidth : 1200, h: typeof window !== "undefined" ? window.innerHeight : 800 });
   const sanitizeRoom = (value: string) => value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 6);
-  const [autoAdvanceNight, setAutoAdvanceNight] = useState(false);
+  const clearRoomParam = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("room");
+    window.history.replaceState({}, "", url.toString());
+  };
+  const resetJoinFlow = () => {
+    setPendingJoinRoom(null);
+    urlRoomRef.current = null;
+    joinPromptedRef.current = false;
+    setJoinModalOpen(false);
+  };
+  const [autoAdvanceNight, setAutoAdvanceNight] = useState(true);
 
   const faceStyle = (role?: Role, face: "up" | "down" = "down") => {
     if (face === "down") {
@@ -274,6 +335,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       clearSession();
       sessionRef.current = null;
       setUpdate(null);
+      clearRoomParam();
+      resetJoinFlow();
       alert("The host ended the game. Returning to the main menu.");
       setView("home");
     });
@@ -281,6 +344,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       clearSession();
       sessionRef.current = null;
       setUpdate(null);
+      clearRoomParam();
+      resetJoinFlow();
       alert("You were removed from the lobby by the host.");
       setView("home");
     });
@@ -295,18 +360,39 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
 
   useEffect(() => {
     if (!update?.game.night) return;
-    setNightCountdown(10);
-    const id = setInterval(() => {
-      setNightCountdown((n) => {
-        if (n <= 1) {
-          clearInterval(id);
-          return 0;
-        }
-        return n - 1;
-      });
-    }, 1000);
+    const endsAt = update.game.night.endsAt ?? Date.now() + 10_000;
+    const updateCountdown = () => {
+      const remainingMs = endsAt - Date.now();
+      setNightCountdown(Math.max(0, Math.ceil(remainingMs / 1000)));
+    };
+    updateCountdown();
+    const id = setInterval(updateCountdown, 500);
     return () => clearInterval(id);
-  }, [update?.game.night?.stepRole, update?.game.night?.stepIndex]);
+  }, [update?.game.night?.stepRole, update?.game.night?.stepIndex, update?.game.night?.endsAt]);
+
+  useEffect(() => {
+    const timedPhase =
+      update?.game.phase === "discussion" ||
+      update?.game.phase === "voting" ||
+      update?.game.phase === "parallelResult" ||
+      update?.game.phase === "nightCountdown";
+    if (!timedPhase) {
+      setPhaseCountdown(0);
+      return;
+    }
+    const endsAt = update?.game.phaseEndsAt;
+    if (!endsAt) {
+      setPhaseCountdown(0);
+      return;
+    }
+    const updateCountdown = () => {
+      const remainingMs = endsAt - Date.now();
+      setPhaseCountdown(Math.max(0, Math.ceil(remainingMs / 1000)));
+    };
+    updateCountdown();
+    const id = setInterval(updateCountdown, 500);
+    return () => clearInterval(id);
+  }, [update?.game.phase, update?.game.phaseEndsAt]);
 
   useEffect(() => {
     if (!update?.game.night) {
@@ -319,23 +405,52 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       setMyFaceUp(true);
       return;
     }
-    const key = `${update.game.night.stepRole}-${update.game.night.stepIndex}`;
+    const key = `${update.game.night.mode ?? "sequential"}-${update.game.night.stepRole}-${update.game.night.stepIndex}`;
     if (nightStepKeyRef.current !== key) {
       nightStepKeyRef.current = key;
       setNightPromptOpen(true);
       setActiveAction(null);
+      troublemakerPicksRef.current = [];
       setSuspectTargetId(null);
       setMyFaceUp(false);
     }
   }, [update?.game.night?.stepIndex, update?.game.night?.stepRole, update?.game.night]);
 
   useEffect(() => {
+    if (!update?.game.night) return;
+    const isParallelNight = update.game.night.mode === "parallel";
+    const role = isParallelNight ? update.you.originalRole : update.game.night.stepRole;
+    if (!role) return;
+    const isYourStep = isParallelNight
+      ? true
+      : update.you.originalRole === role ||
+        (role === "werewolf" && update.you.originalRole === "werewolf") ||
+        (role === "mason" && update.you.originalRole === "mason") ||
+        (role === "minion" && update.you.originalRole === "minion");
+    if (!isYourStep) return;
+    if (!update.game.night.completedThisStep?.[update.you.playerId]) return;
+    setActiveAction(null);
+    setNightPromptOpen(false);
+  }, [
+    update?.game.night?.completedThisStep,
+    update?.game.night?.mode,
+    update?.game.night?.stepRole,
+    update?.you.originalRole,
+    update?.you.playerId,
+  ]);
+
+  useEffect(() => {
     // Auto-arm solo werewolf center peek when prompt is dismissed.
     if (!update?.game.night || nightPromptOpen || activeAction) return;
-    if (update.game.night.stepRole !== "werewolf") return;
     if (update.you.originalRole !== "werewolf") return;
     const completed = update.game.night.completedThisStep?.[update.you.playerId];
     if (completed) return;
+    if (update.game.night.mode === "parallel") {
+      if (update.private?.kind !== "werewolfSoloStatus" || !update.private.isSolo) return;
+      setActiveAction({ role: "werewolf-solo" });
+      return;
+    }
+    if (update.game.night.stepRole !== "werewolf") return;
     const soloWolf =
       update.private?.kind === "werewolfSawWerewolves" && update.private.werewolfIds.length === 0;
     if (soloWolf) {
@@ -350,10 +465,37 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
   }, [update?.game.phase]);
 
   useEffect(() => {
-    const handleResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    if (update?.game.phase !== "night") {
+      troublemakerPicksRef.current = [];
+    }
+  }, [update?.game.phase]);
+
+  useEffect(() => {
+    const isParallelNight = update?.game.night?.mode === "parallel";
+    const completed = !!update?.game.night?.completedThisStep?.[update?.you.playerId ?? ""];
+    if (update?.game.phase !== "night" || !isParallelNight) {
+      setParallelAwaitingResult(false);
+      return;
+    }
+    setParallelAwaitingResult(completed);
+  }, [update?.game.phase, update?.game.night?.mode, update?.game.night?.completedThisStep, update?.you.playerId]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewport({ w: window.innerWidth, h: window.innerHeight });
+      document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
+      document.documentElement.style.setProperty("--vw", `${window.innerWidth * 0.01}px`);
+    };
     handleResize();
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    window.addEventListener("orientationchange", handleResize);
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.removeEventListener("orientationchange", handleResize);
+      visualViewport?.removeEventListener("resize", handleResize);
+    };
   }, []);
 
   useEffect(() => {
@@ -375,13 +517,19 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       setMyFaceUp(false);
       return;
     }
-    if (phase === "discussion" || phase === "voting") {
+    if (phase === "discussion" || phase === "voting" || phase === "parallelResult") {
       setMyFaceUp(false);
       return;
     }
     // reveal or other host-only states
     setMyFaceUp(true);
   }, [update?.you.originalRole, update?.game.phase, update?.game.dealAcks, update?.you.playerId]);
+
+  useEffect(() => {
+    if (activeAction?.role !== "troublemaker") {
+      troublemakerPicksRef.current = [];
+    }
+  }, [activeAction?.role]);
 
   useEffect(() => {
     if (update?.game.phase === "reveal") {
@@ -409,32 +557,39 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       }
       case "werewolfSoloPeek": {
         setToast({
-          message: `Center ${update.private.centerIndex + 1}: ${update.private.role}`,
+          message: `Center ${update.private.centerIndex + 1}: ${displayRole(update.private.role)}`,
           id,
         });
-        setMyFaceUp(true);
         break;
       }
       case "seerViewPlayer": {
         setToast({
-          message: `You saw ${nameFor(update.private.targetPlayerId)}: ${update.private.role}`,
+          message: `You saw ${nameFor(update.private.targetPlayerId)}: ${displayRole(update.private.role)}`,
           id,
         });
         break;
       }
       case "seerViewCenter": {
-        const parts = update.private.center.map((c) => `Center ${c.centerIndex + 1}: ${c.role}`);
+        const parts = update.private.center.map(
+          (c) => `Center ${c.centerIndex + 1}: ${displayRole(c.role)}`
+        );
         setToast({ message: parts.join(" | "), id });
         break;
       }
       case "robberNewRole": {
-        setToast({ message: `You are now ${update.private.role}`, id });
+        setToast({ message: `You are now ${displayRole(update.private.role)}`, id });
         setMyCurrentRole(update.private.role);
-        setMyFaceUp(true);
+        if (update?.game.phase !== "parallelResult") {
+          setMyFaceUp(true);
+        }
         break;
       }
       case "insomniacFinalRole": {
-        setToast({ message: `Your final role: ${update.private.role}`, id });
+        setToast({ message: `Your final role: ${displayRole(update.private.role)}`, id });
+        setMyCurrentRole(update.private.role);
+        if (update?.game.phase !== "parallelResult") {
+          setMyFaceUp(true);
+        }
         break;
       }
       default:
@@ -444,26 +599,56 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       const timer = setTimeout(() => setToast((current) => (current?.id === id ? null : current)), 4500);
       return () => clearTimeout(timer);
     }
-  }, [update?.private?.kind]);
+  }, [update?.private?.kind, update?.game.phase]);
 
   useEffect(() => {
-    if (update?.game.roleSelection && update.you.isHost) {
+    if (!update) return;
+    const roleSelection = update.game.roleSelection ?? [];
+    if (update.you.isHost) {
+      if (roleSelection.length === 0) {
+        if (roleSelectionKeyRef.current !== "empty") {
+          const zeroedCounts = allowedRoles.reduce(
+            (acc, role) => ({ ...acc, [role]: 0 }),
+            {} as Record<Role, number>
+          );
+          roleSelectionKeyRef.current = "empty";
+          setRoleCounts(zeroedCounts);
+        }
+        setView("game");
+        return;
+      }
+      const nextKey = roleSelection.join("|");
+      if (roleSelectionKeyRef.current === nextKey) {
+        setView("game");
+        return;
+      }
+      roleSelectionKeyRef.current = nextKey;
       const nextCounts: Record<Role, number> = { ...recommendedCounts };
       allowedRoles.forEach((role) => {
-        nextCounts[role] = update.game.roleSelection.filter((r) => r === role).length;
+        nextCounts[role] = roleSelection.filter((r) => r === role).length;
       });
-      setRoleCounts(nextCounts);
+      setRoleCounts((current) => {
+        const unchanged = allowedRoles.every((role) => current[role] === nextCounts[role]);
+        return unchanged ? current : nextCounts;
+      });
       setView("game");
-    } else if (update) {
-      setView("game");
+      return;
     }
+    roleSelectionKeyRef.current = roleSelection.join("|");
+    setView("game");
   }, [update?.game.roleSelection, update?.you.isHost]);
+
+  useEffect(() => {
+    if (update?.game.settings?.autoAdvanceNight === undefined) return;
+    setAutoAdvanceNight(update.game.settings.autoAdvanceNight);
+  }, [update?.game.settings?.autoAdvanceNight]);
 
   // Host: auto-advance night steps if enabled.
   useEffect(() => {
     if (!update?.you.isHost) return;
     if (!autoAdvanceNight) return;
     if (!update.game.night) return;
+    if (update.game.night.mode === "parallel") return;
     const key = `${update.game.night.stepRole}-${update.game.night.stepIndex}`;
     const advancedKey = `${key}-auto-advanced`;
     if (nightStepKeyRef.current !== key && nightStepKeyRef.current !== advancedKey) {
@@ -495,7 +680,17 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
 
   const lobbyPlayer = update?.you;
 
+  const warnAlreadyDone = () => {
+    const id = Date.now();
+    setToast({ message: "You have already performed your action.", id });
+    setTimeout(() => setToast((current) => (current?.id === id ? null : current)), 2200);
+  };
+
   const armActionForRole = (role: Role, opts?: { soloWerewolf?: boolean }) => {
+    if (update?.game.night?.completedThisStep?.[update.you.playerId]) {
+      warnAlreadyDone();
+      return;
+    }
     switch (role) {
       case "seer":
         setActiveAction({ role: "seer", centerPicks: [] });
@@ -504,6 +699,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         setActiveAction({ role: "robber" });
         break;
       case "troublemaker":
+        troublemakerPicksRef.current = [];
         setActiveAction({ role: "troublemaker", picks: [] });
         break;
       case "insomniac":
@@ -595,6 +791,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
     clearSession();
     sessionRef.current = null;
     setUpdate(null);
+    clearRoomParam();
+    resetJoinFlow();
     setView("home");
   };
 
@@ -604,6 +802,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
     clearSession();
     sessionRef.current = null;
     setUpdate(null);
+    clearRoomParam();
+    resetJoinFlow();
     setView("home");
   };
 
@@ -630,6 +830,9 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
 
   const hostProgress = () => {
     if (!update || !update.you.isHost) return;
+    if (update.game.phase === "night" && update.game.night?.mode === "parallel" && autoAdvanceNight) {
+      return;
+    }
     switch (update.game.phase) {
       case "lobby":
         startGame();
@@ -637,7 +840,12 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       case "deal":
         startNight();
         break;
+      case "nightCountdown":
+        break;
       case "night":
+        advanceNight();
+        break;
+      case "parallelResult":
         advanceNight();
         break;
       case "discussion":
@@ -661,14 +869,18 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         return "Start game";
       case "deal":
         return "Start night";
+      case "nightCountdown":
+        return "Night starts";
       case "night":
         return "Next step";
+      case "parallelResult":
+        return "To discussion";
       case "discussion":
         return "Start voting";
       case "voting":
         return "Reveal";
       case "reveal":
-        return "Reset";
+        return "Play again";
       default:
         return "Start / Resume";
     }
@@ -726,7 +938,12 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             <h2>Create a game</h2>
             <div className="field">
               <label>Your name</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Riley" />
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Riley"
+                onKeyDown={(e) => handleEnter(e, createRoom)}
+              />
             </div>
             <button className="button primary" type="button" onClick={createRoom}>
               Create & configure
@@ -736,7 +953,12 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             <h2>Join a game</h2>
             <div className="field">
               <label>Your name</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Riley" />
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Riley"
+                onKeyDown={(e) => handleEnter(e, joinRoom)}
+              />
             </div>
             <div className="field">
               <label>Room code</label>
@@ -744,6 +966,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                 value={roomCode}
                 onChange={(e) => setRoomCode(sanitizeRoom(e.target.value))}
                 placeholder="123456"
+                onKeyDown={(e) => handleEnter(e, joinRoom)}
               />
             </div>
             <button className="button ghost" type="button" onClick={joinRoom}>
@@ -770,6 +993,11 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
               onClick={() => {
                 sessionRef.current = null;
                 clearSession();
+                clearRoomParam();
+                resetJoinFlow();
+                setUpdate(null);
+                setRoomCode("");
+                setView("home");
               }}
             >
               Clear saved
@@ -797,6 +1025,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Riley"
+                  onKeyDown={(e) => handleEnter(e, () => joinRoom({ room: code, playerName: name || pendingJoinName || "Player" }))}
                 />
               </div>
               <button
@@ -812,17 +1041,19 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
               >
                 Join room
               </button>
-              <button
-                className="button ghost small"
-                type="button"
-                onClick={() => {
-                  setPendingJoinRoom(null);
-                  urlRoomRef.current = null;
-                  setView("home");
-                }}
-              >
-                Back
-              </button>
+                  <button
+                    className="button ghost small"
+                    type="button"
+                    onClick={() => {
+                      setPendingJoinRoom(null);
+                      urlRoomRef.current = null;
+                      clearRoomParam();
+                      resetJoinFlow();
+                      setView("home");
+                    }}
+                  >
+                    Back
+                  </button>
               {error ? <p className="error">⚠️ {error}</p> : null}
             </div>
           </div>
@@ -879,16 +1110,20 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
 
   const renderNightPanel = () => {
     if (!update?.game.night) return null;
-    const role = update.game.night.stepRole;
-    const isYourStep =
-      update.you.originalRole === role ||
-      (role === "werewolf" && update.you.originalRole === "werewolf") ||
-      (role === "mason" && update.you.originalRole === "mason") ||
-      (role === "minion" && update.you.originalRole === "minion");
+    const isParallelNight = update.game.night.mode === "parallel";
+    const role = isParallelNight ? update.you.originalRole ?? "villager" : update.game.night.stepRole;
+    if (!role) return null;
+    const isYourStep = isParallelNight
+      ? true
+      : update.you.originalRole === role ||
+        (role === "werewolf" && update.you.originalRole === "werewolf") ||
+        (role === "mason" && update.you.originalRole === "mason") ||
+        (role === "minion" && update.you.originalRole === "minion");
+    const parallelSuffix = isParallelNight ? " You'll see the result when the timer ends." : "";
     const script: Record<Role, string> = {
-      werewolf: "Werewolves, open your eyes. If you are alone, you will view one center card.",
-      minion: "Minion, open your eyes and see the werewolves.",
-      mason: "Masons, open your eyes and see each other.",
+      werewolf: "Werewolves, look for each other. If you are alone, you may check one center card.",
+      minion: "Minion, look for the werewolves.",
+      mason: "Masons, look for each other.",
       seer: "Seer, you may view one player's card or two center cards.",
       robber: "Robber, you may swap your card with another player's and then view your new role.",
       troublemaker: "Troublemaker, you may swap two other players.",
@@ -970,11 +1205,9 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             </div>
           );
         case "werewolf":
-          const wolfList =
-            update.private?.kind === "werewolfSawWerewolves"
-              ? update.private.werewolfIds
-              : [];
-          const solo = wolfList.length === 0;
+          const solo = isParallelNight
+            ? update.private?.kind === "werewolfSoloStatus" && update.private.isSolo
+            : update.private?.kind === "werewolfSawWerewolves" && update.private.werewolfIds.length === 0;
           return (
             <div className="stack">
               {solo ? (
@@ -1005,9 +1238,20 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             </div>
           );
         case "insomniac":
+          const insomniacRole = update.private?.kind === "insomniacFinalRole" ? update.private.role : undefined;
           return (
             <div className="stack">
               <p className="lede">Press Start to view your final role.</p>
+              {insomniacRole ? (
+                <div className="hero-card framed">
+                  {roleImage(insomniacRole) ? (
+                    <img src={roleImage(insomniacRole)} alt={insomniacRole} />
+                  ) : (
+                    <div className="card-face up" style={faceStyle(insomniacRole, "up")} />
+                  )}
+                  <div className="card-role under-card">{displayRole(insomniacRole)}</div>
+                </div>
+              ) : null}
               {isYourStep ? (
                 <button
                   className="button primary"
@@ -1048,7 +1292,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         <div className="panel-head">
           <h3>Night Action</h3>
           <div className="pill-row">
-            <span className="pill">{role}</span>
+            <span className="pill">{displayRole(role)}</span>
             <span className="pill">
               Step {update.game.night.stepIndex + 1} / {update.game.night.totalSteps}
             </span>
@@ -1056,7 +1300,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
           </div>
         </div>
         <div className="panel-body">
-          <p className="lede">{script[role]}</p>
+          <p className="lede">{script[role]}{parallelSuffix}</p>
           {!isYourStep ? <div className="overlay-callout">Wait for your turn.</div> : renderActions()}
         </div>
       </div>
@@ -1078,18 +1322,21 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                     {allowedRoles.map((role) => {
                       const count = roleCounts[role];
                       const cap = ROLE_CAPS[role];
-                      const capReached = count >= cap;
-                      const maxedOverall = countsToArray(roleCounts).length >= requiredRoles;
+                      const step = pairedRoles.has(role) ? 2 : 1;
+                      const nextCount = Math.min(cap, count + step);
+                      const delta = nextCount - count;
+                      const maxedOverall = countsToArray(roleCounts).length + delta > requiredRoles;
+                      const capReached = delta <= 0;
                       return (
                         <div key={role} className="role-chip">
-                          <span className="pill small">{role}</span>
+                          <span className="pill small">{displayRole(role)}</span>
                           <div className="role-buttons">
                             <button
                               className="button tiny"
                               type="button"
                               onClick={() => {
-                                if (count <= 0) return;
-                                setRoleCounts((prev) => ({ ...prev, [role]: Math.max(0, prev[role] - 1) }));
+                                if (count === 0) return;
+                                tryAdjustRoleCount(role, "dec");
                               }}
                               disabled={count === 0}
                             >
@@ -1100,8 +1347,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                               className="button tiny"
                               type="button"
                               onClick={() => {
-                                if (capReached) return;
-                                setRoleCounts((prev) => ({ ...prev, [role]: Math.min(cap, prev[role] + 1) }));
+                                if (capReached || maxedOverall) return;
+                                tryAdjustRoleCount(role, "inc");
                               }}
                               disabled={capReached || maxedOverall}
                             >
@@ -1123,12 +1370,53 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                     <input
                       type="checkbox"
                       checked={autoAdvanceNight}
-                      onChange={(e) => setAutoAdvanceNight(e.target.checked)}
+                      onChange={(e) => {
+                        const next = e.target.checked;
+                        setAutoAdvanceNight(next);
+                        socket.emit("host:updateSettings", {
+                          roomCode: update.roomCode,
+                          hostPlayerId: update.you.playerId,
+                          settings: { autoAdvanceNight: next },
+                        });
+                      }}
                     />
                     <span className="toggle-track">
                       <span className="toggle-thumb" />
                     </span>
-                    <span className="toggle-label">Auto-advance night steps</span>
+                    <span className="toggle-label">
+                      Auto-advance night steps
+                      <span
+                        className="help-icon"
+                        data-tooltip="Automatically move to the next night step when the countdown ends."
+                      >
+                        ?
+                      </span>
+                    </span>
+                  </label>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={update.game.settings.parallelNight}
+                      onChange={(e) =>
+                        socket.emit("host:updateSettings", {
+                          roomCode: update.roomCode,
+                          hostPlayerId: update.you.playerId,
+                          settings: { parallelNight: e.target.checked },
+                        })
+                      }
+                    />
+                    <span className="toggle-track">
+                      <span className="toggle-thumb" />
+                    </span>
+                    <span className="toggle-label">
+                      Parallel night
+                      <span
+                        className="help-icon"
+                        data-tooltip="Everyone performs their night action at once; results are revealed after 10 seconds."
+                      >
+                        ?
+                      </span>
+                    </span>
                   </label>
                   <div className="panel-body players-inline">{renderPlayerCards({ showKick: true })}</div>
                   <div className="cta-row wrap">
@@ -1180,8 +1468,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
               <div className="role-grid-modal">
                 <div className="role-text">
                   <p className="eyebrow">Your role</p>
-                  <h2>Keep it secret</h2>
-                  <p className="lede">Tap acknowledge once you&rsquo;ve seen it.</p>
+                  <h2>{displayRole(update.you.originalRole) ?? "??"}</h2>
+                  <p className="lede">Keep it secret. Tap acknowledge once you&rsquo;ve seen it.</p>
                   <button
                     className="button primary"
                     type="button"
@@ -1200,7 +1488,6 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                   ) : (
                     <div className="card-face up" style={faceStyle(update.you.originalRole, "up")} />
                   )}
-                  <div className="card-role under-card">{update.you.originalRole ?? "??"}</div>
                 </div>
               </div>
             </div>
@@ -1208,22 +1495,25 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         );
       case "night":
         if (nightPromptOpen) {
-          const role = update.game.night?.stepRole;
-          const isYourStep =
-            role === update.you.originalRole ||
-            (role === "werewolf" && update.you.originalRole === "werewolf") ||
-            (role === "mason" && update.you.originalRole === "mason") ||
-            (role === "minion" && update.you.originalRole === "minion");
-          const isSoloWerewolf =
-            role === "werewolf" &&
-            update.private?.kind === "werewolfSawWerewolves" &&
-            update.private.werewolfIds.length === 0;
+          const isParallelNight = update.game.night?.mode === "parallel";
+          const role = isParallelNight ? update.you.originalRole : update.game.night?.stepRole;
+          const isYourStep = isParallelNight
+            ? true
+            : role === update.you.originalRole ||
+              (role === "werewolf" && update.you.originalRole === "werewolf") ||
+              (role === "mason" && update.you.originalRole === "mason") ||
+              (role === "minion" && update.you.originalRole === "minion");
+          const isSoloWerewolf = isParallelNight
+            ? update.private?.kind === "werewolfSoloStatus" && update.private.isSolo
+            : role === "werewolf" &&
+              update.private?.kind === "werewolfSawWerewolves" &&
+              update.private.werewolfIds.length === 0;
           return (
             <div className="overlay">
               <div className="overlay-card">
                 {renderNightPanel()}
                 <div className="row wrap host-inline-cta">
-                  {update.you.isHost ? (
+                  {update.you.isHost && !isParallelNight ? (
                     <button
                       className="button primary small"
                       type="button"
@@ -1233,14 +1523,16 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                       Next step
                     </button>
                   ) : null}
-                  {isYourStep &&
+                  {!isParallelNight &&
+                  isYourStep &&
                   role &&
                   role !== "werewolf" &&
                   role !== "mason" &&
                   role !== "robber" &&
                   role !== "troublemaker" &&
                   role !== "insomniac" &&
-                  role !== "minion" ? (
+                  role !== "minion" &&
+                  role !== "seer" ? (
                     <button
                       className="button primary"
                       type="button"
@@ -1274,6 +1566,11 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                   </button>
                 </div>
               ) : null}
+              <div className="row wrap host-inline-cta">
+                <button className="button ghost" type="button" onClick={() => setShowRevealOverlay(false)}>
+                  Show results
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -1310,9 +1607,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
           <span className="pill">Tap a player to assign a role</span>
         </div>
         <div className="panel-body token-grid">
-          {update.game.players
-            .filter((p) => p.playerId !== update.you.playerId)
-            .map((player) => {
+          {update.game.players.map((player) => {
               const suspectRole =
                 update.game.tokens?.suspectRolesByPlayer?.[update.you.playerId]?.[player.playerId] ?? "";
               return (
@@ -1323,7 +1618,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                       <option value="">Pick role</option>
                       {roleOptions.map((role) => (
                         <option key={role} value={role}>
-                          {role}
+                          {roleLabel(role)}
                         </option>
                       ))}
                     </select>
@@ -1355,10 +1650,16 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
 
   const renderRevealPanel = () => {
     if (!update || update.game.phase !== "reveal" || !update.game.reveal) return null;
-    const nameFor = (id?: string) => {
-      if (!id) return "none (tie/no kill)";
-      return update.game.players.find((p) => p.playerId === id)?.name ?? id;
-    };
+    const nameFor = (id?: string) =>
+      (id && update.game.players.find((p) => p.playerId === id)?.name) ?? id ?? "Unknown";
+    const eliminatedIds = update.game.reveal.eliminatedPlayerIds ?? [];
+    const eliminatedLabel = eliminatedIds.length
+      ? eliminatedIds.map(nameFor).join(", ")
+      : "None (tie/no kill)";
+    const werewolfNames = Object.entries(update.game.reveal.finalRoles ?? {})
+      .filter(([, role]) => role === "werewolf")
+      .map(([id]) => nameFor(id));
+    const werewolfLabel = werewolfNames.length ? werewolfNames.join(", ") : "None";
     return (
       <div className="panel">
         <div className="panel-head">
@@ -1366,10 +1667,13 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         </div>
         <div className="panel-body stack">
           <div>
-            <strong>Winners:</strong> {update.game.reveal.winners}
+            <strong>Winners:</strong> {toTitleCase(update.game.reveal.winners)}
           </div>
           <div>
-            <strong>Eliminated:</strong> {nameFor(update.game.reveal.eliminatedPlayerId)}
+            <strong>Werewolves:</strong> {werewolfLabel}
+          </div>
+          <div>
+            <strong>Eliminated:</strong> {eliminatedLabel}
           </div>
         </div>
       </div>
@@ -1409,7 +1713,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             Reveal
           </button>
           <button className="button ghost" type="button" onClick={resetGame}>
-            Reset
+            Play again
           </button>
           <button className="button ghost" type="button" onClick={endGame}>
             End game for all
@@ -1452,10 +1756,53 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
   const requiredRoles = update.game.players.length + 3;
   const selectionCount = countsToArray(roleCounts).length;
   const canStart = selectionCount === requiredRoles;
+  const nightStepRole = update.game.night?.stepRole;
+  const isParallelNight = update.game.night?.mode === "parallel";
+  const pairedRoles = new Set<Role>(["werewolf", "mason"]);
+  const showRoleCountError = (message: string) => {
+    setError(message);
+    setTimeout(() => setError((current) => (current === message ? null : current)), 2200);
+  };
+  const tryAdjustRoleCount = (role: Role, direction: "inc" | "dec") => {
+    const step = pairedRoles.has(role) ? 2 : 1;
+    const current = roleCounts[role] ?? 0;
+    const next = direction === "inc"
+      ? Math.min(ROLE_CAPS[role], current + step)
+      : Math.max(0, current - step);
+    const delta = next - current;
+    if (delta === 0) return;
+    if (delta > 0) {
+      const total = countsToArray(roleCounts).length;
+      if (total + delta > requiredRoles) {
+        const label = displayRole(role);
+        showRoleCountError(`Adding ${delta} ${label}${delta > 1 ? "s" : ""} would exceed the total role count.`);
+        return;
+      }
+    }
+    setRoleCounts((prev) => ({ ...prev, [role]: next }));
+  };
+  const isYourNightStep =
+    update.game.phase === "night" &&
+    (isParallelNight
+      ? true
+      : !!nightStepRole &&
+        (update.you.originalRole === nightStepRole ||
+          (nightStepRole === "werewolf" && update.you.originalRole === "werewolf") ||
+          (nightStepRole === "mason" && update.you.originalRole === "mason") ||
+          (nightStepRole === "minion" && update.you.originalRole === "minion")));
+  const showTopCountdown =
+    update.game.phase === "discussion" ||
+    update.game.phase === "voting" ||
+    update.game.phase === "parallelResult" ||
+    update.game.phase === "nightCountdown" ||
+    (update.game.phase === "night" && (isYourNightStep || isParallelNight));
+  const topCountdownValue =
+    update.game.phase === "night" ? nightCountdown : phaseCountdown;
 
   const renderTable = () => {
     const cancelAction = () => {
       setActiveAction(null);
+      troublemakerPicksRef.current = [];
     };
     const totalTokensOnTarget = (targetId: string) => {
       if (!update.game.tokens) return 0;
@@ -1485,11 +1832,12 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         highlightLabels.set(id, "Mason");
       });
     }
+    const allowPrivateReveal = update.game.phase === "night";
     const revealedCenter = new Map<number, Role>();
-    if (update.private?.kind === "seerViewCenter") {
+    if (allowPrivateReveal && update.private?.kind === "seerViewCenter") {
       update.private.center.forEach((c) => revealedCenter.set(c.centerIndex, c.role));
     }
-    if (update.private?.kind === "werewolfSoloPeek") {
+    if (allowPrivateReveal && update.private?.kind === "werewolfSoloPeek") {
       revealedCenter.set(update.private.centerIndex, update.private.role);
     }
     if (update.game.phase === "reveal" && update.game.reveal?.centerRoles?.length) {
@@ -1498,12 +1846,16 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       });
     }
     const revealedPlayer =
-      update.private?.kind === "seerViewPlayer"
+      allowPrivateReveal && update.private?.kind === "seerViewPlayer"
         ? { id: update.private.targetPlayerId, role: update.private.role }
         : null;
 
     const handleSeatClick = (playerId: string) => {
       if (update.game.phase === "night") {
+        if (update.game.night?.completedThisStep?.[update.you.playerId]) {
+          warnAlreadyDone();
+          return;
+        }
         if (!activeAction) return;
         switch (activeAction.role) {
           case "seer": {
@@ -1526,18 +1878,20 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             break;
           }
           case "troublemaker": {
-            if (activeAction.picks.includes(playerId)) return;
-            const picks = [...activeAction.picks, playerId];
+            if (troublemakerPicksRef.current.includes(playerId)) return;
+            const picks = [...troublemakerPicksRef.current, playerId];
+            troublemakerPicksRef.current = picks;
             if (picks.length < 2) {
               setActiveAction({ role: "troublemaker", picks });
-            } else {
-              socket.emit("night:troublemaker:swap", {
-                roomCode: update.roomCode,
-                playerId: update.you.playerId,
-                targetPlayerIds: picks as [string, string],
-              });
-              setActiveAction(null);
+              return;
             }
+            socket.emit("night:troublemaker:swap", {
+              roomCode: update.roomCode,
+              playerId: update.you.playerId,
+              targetPlayerIds: picks as [string, string],
+            });
+            troublemakerPicksRef.current = [];
+            setActiveAction(null);
             break;
           }
           case "insomniac": {
@@ -1561,17 +1915,21 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
         return;
       }
       if (update.game.phase === "discussion") {
-        setSuspectTargetId(playerId);
+        openSuspectPicker(playerId);
       }
     };
 
     const handleCenterClick = (index: number) => {
       const targetId = `center-${index}`;
       if (update.game.phase === "discussion") {
-        setSuspectTargetId(targetId);
+        openSuspectPicker(targetId);
         return;
       }
       if (!activeAction || update.game.phase !== "night") return;
+      if (update.game.night?.completedThisStep?.[update.you.playerId]) {
+        warnAlreadyDone();
+        return;
+      }
       switch (activeAction.role) {
         case "seer": {
           if (activeAction.centerPicks.includes(index)) return;
@@ -1621,6 +1979,27 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
           return null;
       }
     };
+    const singleRoleTargets = (() => {
+      const targetMap = new Map<Role, string>();
+      const tokenMaps = update.game.tokens?.suspectRolesByPlayer ?? {};
+      const roleTargetCounts: Partial<Record<Role, Record<string, number>>> = {};
+      Object.values(tokenMaps).forEach((suspects) => {
+        Object.entries(suspects).forEach(([targetId, role]) => {
+          if (!role || multiTokenRoles.has(role as Role)) return;
+          const typedRole = role as Role;
+          roleTargetCounts[typedRole] = roleTargetCounts[typedRole] ?? {};
+          roleTargetCounts[typedRole][targetId] = (roleTargetCounts[typedRole][targetId] ?? 0) + 1;
+        });
+      });
+      Object.entries(roleTargetCounts).forEach(([role, counts]) => {
+        const entries = Object.entries(counts);
+        if (!entries.length) return;
+        entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+        targetMap.set(role as Role, entries[0][0]);
+      });
+      return targetMap;
+    })();
+
     const suspicionFor = (targetId: string) => {
       const roles =
         update.game.tokens?.suspectRolesByPlayer &&
@@ -1628,6 +2007,16 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       const counts: Record<string, number> = {};
       roles?.forEach((role) => {
         counts[role] = (counts[role] ?? 0) + 1;
+      });
+      Object.keys(counts).forEach((role) => {
+        const typedRole = role as Role;
+        if (!multiTokenRoles.has(typedRole)) {
+          if (singleRoleTargets.get(typedRole) !== targetId) {
+            delete counts[role];
+          } else {
+            counts[role] = 1;
+          }
+        }
       });
       return Object.entries(counts)
         .sort((a, b) => b[1] - a[1])
@@ -1651,6 +2040,71 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       });
     };
 
+    const suspectRoleOptions =
+      update.game.roleSelection?.length > 0
+        ? Array.from(new Set(update.game.roleSelection))
+        : allowedRoles;
+    const getSuspectRole = (targetId: string) =>
+      update.game.tokens?.suspectRolesByPlayer?.[update.you.playerId]?.[targetId] ?? "";
+    const handleSuspectChange = (targetId: string, roleValue: string) => {
+      if (!roleValue) {
+        socket.emit("discussion:token:remove", {
+          roomCode: update.roomCode,
+          playerId: update.you.playerId,
+          targetPlayerId: targetId,
+        });
+      } else {
+        socket.emit("discussion:token:add", {
+          roomCode: update.roomCode,
+          playerId: update.you.playerId,
+          targetPlayerId: targetId,
+          role: roleValue as Role,
+        });
+      }
+      setSuspectTargetId(null);
+    };
+    const renderSuspectSelect = (targetId: string) => {
+      if (update.game.phase !== "discussion") return null;
+      if (suspectTargetId !== targetId) return null;
+      const currentRole = getSuspectRole(targetId);
+      return (
+        <div className="suspect-select" onClick={(e) => e.stopPropagation()}>
+          <select
+            autoFocus
+            ref={(el) => {
+              suspectSelectRefs.current[targetId] = el;
+            }}
+            value={currentRole}
+            onChange={(e) => handleSuspectChange(targetId, e.target.value)}
+            onBlur={() =>
+              setSuspectTargetId((current) => (current === targetId ? null : current))
+            }
+          >
+            <option value="">Clear</option>
+            {suspectRoleOptions.map((role) => (
+              <option key={role} value={role}>
+                {roleLabel(role)}
+              </option>
+            ))}
+          </select>
+        </div>
+      );
+    };
+
+    const openSuspectPicker = (targetId: string) => {
+      setSuspectTargetId(targetId);
+      requestAnimationFrame(() => {
+        const el = suspectSelectRefs.current[targetId];
+        if (!el) return;
+        if (typeof (el as HTMLSelectElement & { showPicker?: () => void }).showPicker === "function") {
+          (el as HTMLSelectElement & { showPicker: () => void }).showPicker();
+          return;
+        }
+        el.focus();
+        el.click();
+      });
+    };
+
     const renderCenterCards = (mode: "grid" | "cluster") => (
       <div className={`center-cards ${mode === "grid" ? "row" : "triangle"}`}>
         {[0, 1, 2].map((idx) => {
@@ -1666,7 +2120,11 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
           });
           const centerSuspectRole =
             update.game.tokens?.suspectRolesByPlayer?.[update.you.playerId]?.[targetId];
-          if (!centerTokens.length && centerSuspectRole) {
+          if (
+            centerSuspectRole &&
+            (multiTokenRoles.has(centerSuspectRole) || singleRoleTargets.get(centerSuspectRole) === targetId) &&
+            !centerTokens.includes(centerSuspectRole)
+          ) {
             centerTokens.push(centerSuspectRole);
           }
           return (
@@ -1683,7 +2141,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                 className={`card-face ${faceState} ${centerTokens.length ? "suspect-marked" : ""}`}
                 style={faceStyle(visibleRole, faceState as "up" | "down")}
               >
-                {visibleRole ? <div className="card-label">{visibleRole}</div> : null}
+                {visibleRole ? <div className="card-label">{displayRole(visibleRole)}</div> : null}
                 {centerTokens.length ? (
                   <div className="suspect-tokens">
                     {centerTokens.map((role, tokenIdx) => {
@@ -1702,6 +2160,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                   </div>
                 ) : null}
               </div>
+              {renderSuspectSelect(targetId)}
             </div>
           );
         })}
@@ -1740,6 +2199,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       }
       const voteTally = update.game.voting?.tally?.[player.playerId] ?? 0;
       const youVotedHere = selectedVoteId === player.playerId;
+      const eliminatedIds = update.game.reveal?.eliminatedPlayerIds ?? [];
+      const isEliminated = update.game.phase === "reveal" && eliminatedIds.includes(player.playerId);
 
       const faceUpRole =
         revealedRole ??
@@ -1752,7 +2213,11 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       suspects.forEach(([role, count]) => {
         for (let i = 0; i < count; i += 1) tokens.push(role as Role);
       });
-      if (!tokens.length && suspectRole) {
+      if (
+        suspectRole &&
+        (multiTokenRoles.has(suspectRole) || singleRoleTargets.get(suspectRole) === player.playerId) &&
+        !tokens.includes(suspectRole)
+      ) {
         tokens.push(suspectRole);
       }
       const hasTokens = tokens.length > 0;
@@ -1760,9 +2225,9 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       return (
         <div
           key={player.playerId}
-          className={`seat ${isYou ? "you" : ""} ${highlightIds.has(player.playerId) ? "highlight" : ""} ${
-            isActionTarget ? "actionable" : ""
-          } ${layoutKind === "grid" || layoutKind === "band" ? "seat--grid" : ""}`}
+          className={`seat ${isYou ? "you" : ""} ${isEliminated ? "eliminated" : ""} ${
+            highlightIds.has(player.playerId) ? "highlight" : ""
+          } ${isActionTarget ? "actionable" : ""} ${layoutKind === "grid" || layoutKind === "band" ? "seat--grid" : ""}`}
           style={pos}
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDropOn(player.playerId)}
@@ -1773,8 +2238,8 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
               className={`card-face ${faceClass} ${hasTokens ? "suspect-marked" : ""}`}
               style={faceStyle(faceUpRole, faceClass === "up" ? "up" : "down")}
             >
-          {suspectRole ? <div className="card-role">{suspectRole}</div> : null}
-          {faceUpRole ? <div className="card-label">{faceUpRole}</div> : null}
+          {suspectRole ? <div className="card-role">{displayRole(suspectRole)}</div> : null}
+          {faceUpRole ? <div className="card-label">{displayRole(faceUpRole)}</div> : null}
           {tokens.length ? (
             <div className="suspect-tokens">
               {tokens.map((role, idx) => {
@@ -1793,12 +2258,14 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             </div>
           ) : null}
         </div>
-      </div>
+            {renderSuspectSelect(player.playerId)}
+          </div>
       <div className="card-footer">
         <div className="pill tiny">{isYou ? `${player.name} (You)` : player.name}</div>
         {highlightLabels.get(player.playerId) ? (
           <div className="highlight-tag">{highlightLabels.get(player.playerId)}</div>
         ) : null}
+        {isEliminated ? <div className="elimination-tag">Eliminated</div> : null}
       </div>
       {update.game.phase === "voting" ? (
         <div className="vote-badge">
@@ -1842,37 +2309,136 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             </button>
           </div>
         ) : null}
-        {suspectTargetId ? (
-          <div className="action-toast">
-            <span>
-              Suspect {update.game.players.find((p) => p.playerId === suspectTargetId)?.name ?? "player"} as:
-            </span>
-            <select
-              onChange={(e) => {
-                const role = e.target.value as Role;
-                if (!role) return;
-                socket.emit("discussion:token:add", {
-                  roomCode: update.roomCode,
-                  playerId: update.you.playerId,
-                  targetPlayerId: suspectTargetId,
-                  role,
-                });
-                setSuspectTargetId(null);
-              }}
-            >
-              <option value="">Pick role</option>
-              {(update.game.roleSelection?.length
-                ? Array.from(new Set(update.game.roleSelection))
-                : allowedRoles
-              ).map((role) => (
-                <option key={role} value={role}>
-                  {role}
-                </option>
-              ))}
-            </select>
-            <button className="button tiny ghost" type="button" onClick={() => setSuspectTargetId(null)}>
-              Cancel
-            </button>
+        {update.game.phase === "parallelResult" && update.private?.kind ? (
+          <div className="result-panel">
+            <div className="result-card-shell">
+              {(() => {
+                const nameFor = (id: string) =>
+                  update.game.players.find((p) => p.playerId === id)?.name ?? "Player";
+                switch (update.private.kind) {
+                  case "minionSawWerewolves": {
+                    const names = update.private.werewolfIds.map(nameFor);
+                    return (
+                      <>
+                        <div className="result-title">Werewolves</div>
+                        <div className="result-subtitle">
+                          {names.length ? names.join(", ") : "No werewolves"}
+                        </div>
+                      </>
+                    );
+                  }
+                  case "masonSawMasons": {
+                    const names = update.private.masonIds.map(nameFor);
+                    return (
+                      <>
+                        <div className="result-title">Masons</div>
+                        <div className="result-subtitle">
+                          {names.length ? names.join(", ") : "No other masons"}
+                        </div>
+                      </>
+                    );
+                  }
+                  case "werewolfSawWerewolves": {
+                    const names = update.private.werewolfIds.map(nameFor);
+                    return (
+                      <>
+                        <div className="result-title">Werewolves</div>
+                        <div className="result-subtitle">
+                          {names.length ? names.join(", ") : "No other werewolves"}
+                        </div>
+                      </>
+                    );
+                  }
+                  case "werewolfSoloStatus": {
+                    return (
+                      <>
+                        <div className="result-title">You are alone</div>
+                        <div className="result-subtitle">No card viewed.</div>
+                      </>
+                    );
+                  }
+                  case "seerViewPlayer": {
+                    const targetName =
+                      update.game.players.find((p) => p.playerId === update.private.targetPlayerId)?.name ?? "Player";
+                    return (
+                      <>
+                        <div className="result-title">You saw {targetName}</div>
+                        <div className="result-cards">{renderRoleCard(update.private.role)}</div>
+                      </>
+                    );
+                  }
+                  case "seerViewCenter": {
+                    return (
+                      <>
+                        <div className="result-title">You saw the center</div>
+                        <div className="result-cards">
+                          {update.private.center.map((c) => (
+                            <div key={c.centerIndex}>{renderRoleCard(c.role)}</div>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  }
+                  case "werewolfSoloPeek": {
+                    return (
+                      <>
+                        <div className="result-title">Center {update.private.centerIndex + 1}</div>
+                        <div className="result-cards">{renderRoleCard(update.private.role)}</div>
+                      </>
+                    );
+                  }
+                  case "robberNewRole": {
+                    return (
+                      <>
+                        <div className="result-title">You are now</div>
+                        <div className="result-cards">{renderRoleCard(update.private.role)}</div>
+                      </>
+                    );
+                  }
+                  case "insomniacFinalRole": {
+                    return (
+                      <>
+                        <div className="result-title">Your final role</div>
+                        <div className="result-cards">{renderRoleCard(update.private.role)}</div>
+                      </>
+                    );
+                  }
+                  default:
+                    return (
+                      <>
+                        <div className="result-title">No night action</div>
+                        <div className="result-subtitle">You did not receive any new information.</div>
+                      </>
+                    );
+                }
+              })()}
+              <div className="result-subtitle">Discussion starts in {formatCountdown(phaseCountdown)}.</div>
+            </div>
+          </div>
+        ) : null}
+        {parallelAwaitingResult && update.game.night?.mode === "parallel" ? (
+          <div className={`mini-modal ${update.you.isHost ? "host" : ""}`}>
+            <div className="mini-modal-card">
+              <div className="mini-modal-text">
+                You will see the result of your action in {formatCountdown(nightCountdown)}.
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {update.game.phase === "nightCountdown" ? (
+          <div className={`mini-modal ${update.you.isHost ? "host" : ""}`}>
+            <div className="mini-modal-card">
+              <div className="mini-modal-text">
+                Night starts in {formatCountdown(phaseCountdown)}.
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {update.game.phase === "deal" && dealAckedLocal && !update.you.isHost ? (
+          <div className="mini-modal">
+            <div className="mini-modal-card">
+              <div className="mini-modal-text">Waiting on host to start the night...</div>
+            </div>
           </div>
         ) : null}
         {toast ? <div className="action-toast secondary">{toast.message}</div> : null}
@@ -1889,9 +2455,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       url: shareUrl,
     };
     try {
-      if (navigator.share && typeof navigator.share === "function") {
-        await navigator.share(sharePayload);
-      } else if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
         await navigator.clipboard.writeText(shareUrl);
       } else {
         const textarea = document.createElement("textarea");
@@ -1942,7 +2506,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
     <div className="game-shell">
       <main className="board">
         <section className="panel table-panel">
-          <div className="panel-body">{renderTable()}</div>
+          <div className="panel-body table-body">{renderTable()}</div>
         </section>
       </main>
       {joinModalOpen ? (
@@ -1958,6 +2522,14 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                 value={pendingJoinName}
                 onChange={(e) => setPendingJoinName(e.target.value)}
                 placeholder="Your name"
+                onKeyDown={(e) =>
+                  handleEnter(e, () =>
+                    joinRoom({
+                      room: pendingJoinRoom ?? urlRoomRef.current ?? "",
+                      playerName: pendingJoinName || name || "Player",
+                    })
+                  )
+                }
               />
             </div>
             <div className="row wrap">
@@ -1990,9 +2562,17 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
       ) : null}
       <div className="table-info">
         <div className="info-spacer" />
-        <div className="phase-chip">
-          <span className="phase-label">Phase</span>
-          <span className="phase-value">{update.game.phase}</span>
+        <div className="phase-stack">
+          <div className="phase-chip">
+            <span className="phase-label">Phase</span>
+          <span className="phase-value">{toTitleCase(update.game.phase)}</span>
+          </div>
+          {showTopCountdown && topCountdownValue > 0 ? (
+            <div className="phase-chip">
+              <span className="phase-label">Time</span>
+              <span className="phase-value">{formatCountdown(topCountdownValue)}</span>
+            </div>
+          ) : null}
         </div>
         <div className="info-right">
           {update.you.isHost ? <div className="pill accent info-pill">Host</div> : null}
@@ -2010,7 +2590,9 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             onClick={hostProgress}
             disabled={
               (update.game.phase === "lobby" && (!canStart || update.game.players.length < 3)) ||
-              (update.game.phase === "night" && nightCountdown > 0)
+              (update.game.phase === "night" && (nightCountdown > 0 || (isParallelNight && autoAdvanceNight))) ||
+              (update.game.phase === "parallelResult" && phaseCountdown > 0) ||
+              update.game.phase === "nightCountdown"
             }
           >
             {hostButtonLabel()}
@@ -2032,7 +2614,7 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
             <div className="panel-body stack">
               <div className="pill-row">
                 <span className="pill">Room {update.roomCode}</span>
-                <span className="pill">Phase: {update.game.phase}</span>
+                <span className="pill">Phase: {toTitleCase(update.game.phase)}</span>
               </div>
               <div className="pill-row">
                 <span className="pill">Players: {update.game.players.length}</span>
@@ -2044,17 +2626,21 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                     {allowedRoles.map((role) => {
                       const count = roleCounts[role];
                       const cap = ROLE_CAPS[role];
-                      const capReached = count >= cap;
+                      const step = pairedRoles.has(role) ? 2 : 1;
+                      const nextCount = Math.min(cap, count + step);
+                      const delta = nextCount - count;
+                      const maxedOverall = countsToArray(roleCounts).length + delta > requiredRoles;
+                      const capReached = delta <= 0;
                       return (
                         <div key={role} className="role-chip">
-                          <span className="pill small">{role}</span>
+                          <span className="pill small">{displayRole(role)}</span>
                           <div className="role-buttons">
                             <button
                               className="button tiny"
                               type="button"
                               onClick={() => {
-                                if (count <= 0) return;
-                                setRoleCounts((prev) => ({ ...prev, [role]: Math.max(0, prev[role] - 1) }));
+                                if (count === 0) return;
+                                tryAdjustRoleCount(role, "dec");
                               }}
                               disabled={count === 0}
                             >
@@ -2065,10 +2651,10 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                               className="button tiny"
                               type="button"
                               onClick={() => {
-                                if (capReached) return;
-                                setRoleCounts((prev) => ({ ...prev, [role]: Math.min(cap, prev[role] + 1) }));
+                                if (capReached || maxedOverall) return;
+                                tryAdjustRoleCount(role, "inc");
                               }}
-                              disabled={capReached}
+                              disabled={capReached || maxedOverall}
                             >
                               +
                             </button>
@@ -2077,6 +2663,31 @@ const roleFocus: Record<Role, { x: string; y: string }> = {
                       );
                     })}
                   </div>
+                  <label className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={update.game.settings.parallelNight}
+                      onChange={(e) =>
+                        socket.emit("host:updateSettings", {
+                          roomCode: update.roomCode,
+                          hostPlayerId: update.you.playerId,
+                          settings: { parallelNight: e.target.checked },
+                        })
+                      }
+                    />
+                    <span className="toggle-track">
+                      <span className="toggle-thumb" />
+                    </span>
+                    <span className="toggle-label">
+                      Parallel night
+                      <span
+                        className="help-icon"
+                        data-tooltip="Everyone performs their night action at once; results are revealed after 10 seconds."
+                      >
+                        ?
+                      </span>
+                    </span>
+                  </label>
                   <button
                     className="button primary"
                     type="button"

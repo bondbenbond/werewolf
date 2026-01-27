@@ -3,7 +3,9 @@
 export type Phase =
   | "lobby"
   | "deal"
+  | "nightCountdown"
   | "night"
+  | "parallelResult"
   | "discussion"
   | "voting"
   | "reveal";
@@ -21,8 +23,8 @@ export type Role =
 export type CenterIndex = 0 | 1 | 2;
 
 export const NIGHT_ORDER: Role[] = [
-  "minion",
   "werewolf",
+  "minion",
   "mason",
   "seer",
   "robber",
@@ -48,6 +50,8 @@ export type GameSettings = {
   showActionLogOnReveal: boolean;
   tokensEnabled: boolean;
   tokensPerPlayerLimit: number;
+  autoAdvanceNight: boolean;
+  parallelNight: boolean;
 };
 
 export const DEFAULT_GAME_SETTINGS: GameSettings = {
@@ -57,6 +61,8 @@ export const DEFAULT_GAME_SETTINGS: GameSettings = {
   showActionLogOnReveal: false,
   tokensEnabled: true,
   tokensPerPlayerLimit: 3,
+  autoAdvanceNight: true,
+  parallelNight: false,
 };
 
 export type RoleSelection = {
@@ -102,9 +108,11 @@ export type NightActionLogEntry =
 
 export type NightState = {
   stepIndex: number;
-  stepRole: Role;
+  stepRole: Role | null;
   totalSteps: number;
   completionByPlayer: Record<string, boolean>;
+  endsAt?: number;
+  mode?: "sequential" | "parallel";
   actionLog?: NightActionLogEntry[];
 };
 
@@ -118,7 +126,7 @@ export type Winners = "village" | "werewolves";
 
 export type RevealState = {
   tally: Record<string, number>;
-  eliminatedPlayerId?: string;
+  eliminatedPlayerIds: string[];
   winners: Winners;
   finalRolesByPlayer: Record<string, Role>;
   centerRoles: [Role, Role, Role];
@@ -129,6 +137,7 @@ export type GameState = {
   roomCode: string;
   gameName?: string;
   phase: Phase;
+  phaseEndsAt?: number;
   hostPlayerId: string;
   maxPlayers: number;
   playersById: Record<string, Player>;
@@ -151,6 +160,7 @@ export type PrivateView =
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
+  | { kind: "werewolfSoloStatus"; isSolo: boolean }
   | { kind: "werewolfSoloPeek"; centerIndex: CenterIndex; role: Role }
   | { kind: "seerViewPlayer"; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: CenterIndex; role: Role }> }
@@ -236,32 +246,24 @@ export const computeVoteTally = (state: GameState): Record<string, number> => {
   return tally;
 };
 
-export const computeElimination = (tally: Record<string, number>): string | undefined => {
-  let eliminated: string | undefined;
+export const computeEliminations = (tally: Record<string, number>): string[] => {
   let topVotes = 0;
-  let tied = false;
-
-  Object.entries(tally).forEach(([target, votes]) => {
-    if (votes > topVotes) {
-      eliminated = target;
-      topVotes = votes;
-      tied = false;
-    } else if (votes === topVotes) {
-      tied = true;
-    }
+  Object.values(tally).forEach((votes) => {
+    if (votes > topVotes) topVotes = votes;
   });
-
-  if (tied) return undefined; // Option A: tie means no elimination
-  return eliminated;
+  if (topVotes === 0) return [];
+  return Object.entries(tally)
+    .filter(([, votes]) => votes === topVotes)
+    .map(([playerId]) => playerId);
 };
 
-export const computeWinners = (state: GameState, eliminatedPlayerId?: string): Winners => {
+export const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): Winners => {
   const roles = state.roles?.currentRolesByPlayer ?? {};
   const werewolves = Object.entries(roles)
     .filter(([, role]) => role === "werewolf")
     .map(([id]) => id);
 
-  if (eliminatedPlayerId && roles[eliminatedPlayerId] === "werewolf") {
+  if (eliminatedPlayerIds.some((id) => roles[id] === "werewolf")) {
     return "village";
   }
 

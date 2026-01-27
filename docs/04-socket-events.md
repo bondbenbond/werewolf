@@ -664,7 +664,7 @@ type RoomPublicState = {
 
   // Reveal
   reveal?: {
-    eliminatedPlayerId?: string;
+    eliminatedPlayerIds: string[];
     winners?: "village" | "werewolves";
     finalRoles?: Record<string, Role>;
     centerRoles?: Role[];
