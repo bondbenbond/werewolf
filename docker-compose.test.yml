@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  web:
+    container_name: werewolf-web-test
+    networks:
+      caddy-net:
+        aliases:
+          - werewolf-web-test
+
+  server:
+    container_name: werewolf-server-test
+    networks:
+      caddy-net:
+        aliases:
+          - werewolf-server-test

@@ -68,8 +68,9 @@ type GameUpdatePayload = {
   private?: PrivateView;
 };
 
+const socketUrl = (typeof window !== "undefined" && window.location.origin) || "http://localhost:4000";
 const createSocket = () =>
-  io("http://192.168.4.81:4000/", {
+  io(import.meta.env.VITE_SERVER_URL || socketUrl, {
     transports: ["polling"],
     upgrade: false,
     reconnectionAttempts: 5,

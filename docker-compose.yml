@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  web:
+    image: werewolf-web:${WEB_TAG}
+    environment:
+      VITE_SERVER_URL: ${SERVER_URL}
+    networks:
+      - caddy-net
+    expose:
+      - "80"
+
+  server:
+    image: werewolf-server:${SERVER_TAG}
+    environment:
+      NODE_ENV: ${NODE_ENV}
+    networks:
+      - caddy-net
+    expose:
+      - "4000"
+
+networks:
+  caddy-net:
+    external: true

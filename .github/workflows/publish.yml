@@ -1,0 +1,43 @@
+name: Publish images
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/bondbenbond/werewolf-server:latest
+            ghcr.io/bondbenbond/werewolf-server:${{ github.sha }}
+
+      - name: Build and push web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/bondbenbond/werewolf-web:latest
+            ghcr.io/bondbenbond/werewolf-web:${{ github.sha }}
+          build-args: |
+            VITE_SERVER_URL=https://api.werewolf.bondbenbond.com
