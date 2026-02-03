@@ -1,116 +1,123 @@
-import { createServer } from "http";
+import fastify from "fastify";
+import cors from "@fastify/cors";
 import { randomBytes } from "crypto";
-import { Server, Socket } from "socket.io";
 import {
-  DEFAULT_GAME_SETTINGS,
+  CenterIndex,
+  CommandEnvelope,
+  CommandResponse,
+  CreateGameResponse,
+  Event,
+  EventBatch,
   GameSettings,
   GameState,
-  Player,
+  JoinGameResponse,
+  NightActionPayload,
+  NIGHT_ORDER,
   PrivateView,
+  PublicGameState,
+  RevealState,
   Role,
   RolesState,
+  SnapshotResponse,
   TokensState,
   VotingState,
-  applyRobberSwap,
-  applyTroublemakerSwap,
-  computeEliminations,
-  computeVoteTally,
-  computeWinners,
-  eligiblePlayersForNightRole,
-  getCurrentRole,
-  getOriginalRole,
-  isHost,
-  isPhase,
-  isPlayerAloneWerewolf,
-  now,
-  shuffle,
-  NIGHT_ORDER,
-  createEmptyTokensState,
-  createEmptyVotingState,
 } from "@werewolf/shared";
 
-type RoomContext = {
-  state: GameState;
-  privateViews: Record<string, PrivateView>;
-  nightSteps: Role[];
-  parallelActions: Record<string, ParallelNightAction>;
-  parallelTimer?: NodeJS.Timeout;
-  parallelResultTimer?: NodeJS.Timeout;
-  nightCountdownTimer?: NodeJS.Timeout;
-  votingTimer?: NodeJS.Timeout;
-};
-
-type ParallelNightAction =
-  | { kind: "seerViewPlayer"; targetPlayerId: string }
-  | { kind: "seerViewCenter"; centerIndices: [0 | 1 | 2, 0 | 1 | 2] }
-  | { kind: "robberSwap"; targetPlayerId: string }
-  | { kind: "troublemakerSwap"; targetPlayerIds: [string, string] }
-  | { kind: "werewolfSoloPeek"; centerIndex: 0 | 1 | 2 }
-  | { kind: "insomniacPeek" }
-  | { kind: "done" };
-
-type SocketRef = { roomCode: string; playerId: string };
-
 const PORT = Number(process.env.PORT ?? 4000);
-const NIGHT_STEP_SECONDS = 10;
-const NIGHT_START_COUNTDOWN_SECONDS = 5;
-const PARALLEL_RESULT_SECONDS = 10;
-const VOTING_SECONDS = 20;
 
-const httpServer = createServer();
-const io = new Server(httpServer, {
-  cors: { origin: "*" },
-});
+const DEFAULT_SETTINGS: GameSettings = {
+  discussionSeconds: 300,
+  allowVoteChanges: true,
+  anonymousVotes: true,
+  showActionLogOnReveal: false,
+  tokensEnabled: true,
+  autoAdvanceNight: true,
+  parallelNight: false,
+};
+const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT ?? 150);
 
-const log = (...args: unknown[]) => {
-  console.log(new Date().toISOString(), "[server]", ...args);
+type GameRecord = {
+  state: GameState;
+  version: number;
+  events: Event[];
+  secrets: Map<string, string>;
+  streams: Set<NodeJS.WritableStream>;
+  privateStreams: Map<string, Set<NodeJS.WritableStream>>;
+  privateViews: Map<string, PrivateView>;
+  nightSteps: Role[];
+  parallelResultTimer?: NodeJS.Timeout;
+  parallelNightTimer?: NodeJS.Timeout;
+  dopplegangerInsomniac: Set<string>;
+  historyLimit: number;
 };
 
-const rooms = new Map<string, RoomContext>();
-const socketLookup = new Map<string, SocketRef>();
-
-const sendError = (socket: Socket, code: string, message: string) => {
-  socket.emit("error", { code, message });
-};
+const games = new Map<string, GameRecord>();
 
 const generateRoomCode = () =>
   Array.from(randomBytes(6))
     .map((byte) => (byte % 10).toString())
     .join("")
     .slice(0, 6);
+
 const generateId = () => randomBytes(8).toString("hex");
 const generateSecret = () => randomBytes(12).toString("hex");
 
-const createPlayer = (name: string): Player => ({
-  playerId: generateId(),
-  name,
-  connected: true,
-  ready: false,
-  resumeSecret: generateSecret(),
-});
+const nowIso = () => new Date().toISOString();
 
-const createRoomState = (roomCode: string, host: Player, maxPlayers: number): GameState => ({
-  roomCode,
-  hostPlayerId: host.playerId,
-  gameName: `Room ${roomCode}`,
-  phase: "lobby",
-  phaseEndsAt: undefined,
-  maxPlayers,
-  playersById: { [host.playerId]: host },
-  playerOrder: [host.playerId],
-  settings: { ...DEFAULT_GAME_SETTINGS },
-  roleSelection: { roles: [] },
-  createdAt: now(),
-  updatedAt: now(),
-});
-
-const ensureRoom = (roomCode: string): RoomContext | undefined => rooms.get(roomCode);
-
-const touch = (state: GameState) => {
-  state.updatedAt = now();
+const shuffle = <T>(items: T[]): T[] => {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 };
 
-const buildRoomPublicState = (state: GameState) => {
+const sendSse = (res: NodeJS.WritableStream, event: string, data: unknown) => {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+const appendEvent = (record: GameRecord, type: string, payload: Record<string, unknown>) => {
+  record.version += 1;
+  const event: Event = {
+    version: record.version,
+    type,
+    payload,
+    createdAt: nowIso(),
+  };
+  record.events.push(event);
+  if (record.events.length > record.historyLimit) {
+    record.events.splice(0, record.events.length - record.historyLimit);
+  }
+  record.streams.forEach((stream) => {
+    sendSse(stream, "public", event);
+  });
+  return event;
+};
+
+const emitPrivate = (record: GameRecord, playerId: string, type: string, payload: Record<string, unknown>) => {
+  const event: Event = {
+    version: record.version + 1,
+    type,
+    payload: { ...payload, targetPlayerId: playerId },
+    createdAt: nowIso(),
+  };
+  record.version = event.version;
+  record.events.push(event);
+  if (record.events.length > record.historyLimit) {
+    record.events.splice(0, record.events.length - record.historyLimit);
+  }
+  const streams = record.privateStreams.get(playerId);
+  if (streams) {
+    streams.forEach((stream) => {
+      sendSse(stream, "private", event);
+    });
+  }
+  return event;
+};
+
+const buildPublicState = (state: GameState): PublicGameState => {
   const players = state.playerOrder.map((playerId) => {
     const player = state.playersById[playerId];
     return {
@@ -118,44 +125,8 @@ const buildRoomPublicState = (state: GameState) => {
       name: player?.name ?? "Player",
       connected: player?.connected ?? false,
       ready: player?.ready ?? false,
-      hasVoted: !!state.voting?.votesByPlayer[playerId],
     };
   });
-
-  const dealAcks = state.deal?.ackByPlayer;
-  const night = state.night
-    ? {
-        stepRole: state.night.stepRole,
-        completedThisStep: state.night.completionByPlayer,
-        stepIndex: state.night.stepIndex,
-        totalSteps: state.night.totalSteps,
-        endsAt: state.night.endsAt,
-        mode: state.night.mode,
-      }
-    : undefined;
-
-  const tokens = state.tokens
-    ? {
-        tokensByPlayer: state.tokens.tokensByPlayer,
-        suspectRolesByPlayer: state.tokens.suspectRolesByPlayer,
-      }
-    : undefined;
-
-  const voting = state.voting
-    ? {
-        locked: state.voting.locked,
-        tally: computeVoteTally(state),
-      }
-    : undefined;
-
-  const reveal = state.reveal
-    ? {
-        eliminatedPlayerIds: state.reveal.eliminatedPlayerIds,
-        winners: state.reveal.winners,
-        finalRoles: state.reveal.finalRolesByPlayer,
-        centerRoles: state.reveal.centerRoles,
-      }
-    : undefined;
 
   return {
     phase: state.phase,
@@ -166,154 +137,168 @@ const buildRoomPublicState = (state: GameState) => {
     players,
     roleSelection: state.roleSelection.roles,
     settings: state.settings,
-    dealAcks,
-    night,
-    tokens,
-    voting,
-    reveal,
+    tokenPoolByRole: state.tokens?.tokenPoolByRole,
+    dealAcks: state.deal?.ackByPlayer,
+    night: state.night
+      ? {
+          stepRole: state.night.stepRole,
+          completedThisStep: state.night.completionByPlayer,
+          stepIndex: state.night.stepIndex,
+          totalSteps: state.night.totalSteps,
+          endsAt: state.night.endsAt,
+          mode: state.night.mode,
+        }
+      : undefined,
+    tokens: state.tokens
+      ? {
+          tokensByPlayer: state.tokens.tokensByPlayer,
+          suspectRolesByPlayer: state.tokens.suspectRolesByPlayer,
+        }
+      : undefined,
+    voting: state.voting
+      ? {
+          locked: state.voting.locked,
+          tally: computeVoteTally(state),
+        }
+      : undefined,
+    reveal: state.reveal
+      ? {
+          eliminatedPlayerIds: state.reveal.eliminatedPlayerIds,
+          winners: state.reveal.winners,
+          finalRoles: state.reveal.finalRolesByPlayer,
+          centerRoles: state.reveal.centerRoles,
+        }
+      : undefined,
   };
 };
 
-const emitRoomUpdate = async (room: RoomContext) => {
-  const { state, privateViews } = room;
-  for (const playerId of state.playerOrder) {
-    const player = state.playersById[playerId];
-    if (!player?.socketId) continue;
-    const socket = io.sockets.sockets.get(player.socketId);
-    if (!socket) continue;
+const getOriginalRole = (state: GameState, playerId: string): Role | undefined =>
+  state.roles?.originalRolesByPlayer[playerId];
 
-    socket.emit("game:update", {
-      roomCode: state.roomCode,
-      you: {
-        playerId,
-        name: player.name,
-        isHost: isHost(state, playerId),
-        connected: player.connected,
-        ready: player.ready,
-        originalRole: getOriginalRole(state, playerId),
-      },
-      game: buildRoomPublicState(state),
-      private: privateViews[playerId] ?? { kind: "none" },
-    });
+const getCurrentRole = (state: GameState, playerId: string): Role | undefined =>
+  state.roles?.currentRolesByPlayer[playerId];
+
+const eligiblePlayersForNightRole = (state: GameState, role: Role): string[] => {
+  if (!state.roles) return [];
+  return Object.entries(state.roles.originalRolesByPlayer)
+    .filter(([, originalRole]) => originalRole === role)
+    .map(([playerId]) => playerId);
+};
+
+const isPlayerAloneWerewolf = (state: GameState, playerId: string): boolean => {
+  const wolves = eligiblePlayersForNightRole(state, "werewolf");
+  return wolves.length === 1 && wolves[0] === playerId;
+};
+
+const applyRobberSwap = (state: GameState, robberId: string, targetId: string): Role | undefined => {
+  const roles = state.roles;
+  if (!roles) return undefined;
+  const targetRole = roles.currentRolesByPlayer[targetId];
+  const robberRole = roles.currentRolesByPlayer[robberId];
+  roles.currentRolesByPlayer[targetId] = robberRole;
+  roles.currentRolesByPlayer[robberId] = targetRole;
+  return targetRole;
+};
+
+const applyTroublemakerSwap = (state: GameState, firstId: string, secondId: string) => {
+  const roles = state.roles;
+  if (!roles) return;
+  const aRole = roles.currentRolesByPlayer[firstId];
+  roles.currentRolesByPlayer[firstId] = roles.currentRolesByPlayer[secondId];
+  roles.currentRolesByPlayer[secondId] = aRole;
+};
+
+const applyDrunkSwap = (state: GameState, playerId: string, centerIndex: CenterIndex) => {
+  const roles = state.roles;
+  if (!roles) return;
+  const playerRole = roles.currentRolesByPlayer[playerId];
+  const centerRole = roles.centerRoles[centerIndex];
+  roles.currentRolesByPlayer[playerId] = centerRole;
+  roles.centerRoles[centerIndex] = playerRole;
+};
+
+const clearParallelResultTimer = (record: GameRecord) => {
+  if (record.parallelResultTimer) {
+    clearTimeout(record.parallelResultTimer);
+    record.parallelResultTimer = undefined;
   }
 };
 
-const setPrivateView = (room: RoomContext, playerId: string, view: PrivateView) => {
-  room.privateViews[playerId] = view;
-};
-
-const resetPrivateViews = (room: RoomContext) => {
-  room.privateViews = {};
-};
-
-const clearParallelTimer = (room: RoomContext) => {
-  if (room.parallelTimer) {
-    clearTimeout(room.parallelTimer);
-    room.parallelTimer = undefined;
+const clearParallelNightTimer = (record: GameRecord) => {
+  if (record.parallelNightTimer) {
+    clearTimeout(record.parallelNightTimer);
+    record.parallelNightTimer = undefined;
   }
 };
 
-const clearParallelResultTimer = (room: RoomContext) => {
-  if (room.parallelResultTimer) {
-    clearTimeout(room.parallelResultTimer);
-    room.parallelResultTimer = undefined;
+const getTargetKind = (state: GameState, targetId: string): "player" | "center" | "invalid" => {
+  if (state.playersById[targetId]) return "player";
+  if (targetId.startsWith("center-")) {
+    const idx = Number(targetId.replace("center-", ""));
+    if (!Number.isNaN(idx) && idx >= 0 && idx <= 2) return "center";
   }
+  return "invalid";
 };
 
-const clearNightCountdownTimer = (room: RoomContext) => {
-  if (room.nightCountdownTimer) {
-    clearTimeout(room.nightCountdownTimer);
-    room.nightCountdownTimer = undefined;
+const removeTokenAssignment = (tokens: TokensState, ownerId: string, targetId: string): Role | null => {
+  const ownerTokens = tokens.tokensByPlayer[ownerId];
+  const ownerSuspects = tokens.suspectRolesByPlayer[ownerId];
+  if (!ownerTokens || !ownerSuspects) return null;
+  const role = ownerSuspects[targetId];
+  delete ownerTokens[targetId];
+  delete ownerSuspects[targetId];
+  if (Object.keys(ownerTokens).length === 0) delete tokens.tokensByPlayer[ownerId];
+  if (Object.keys(ownerSuspects).length === 0) delete tokens.suspectRolesByPlayer[ownerId];
+  return role ?? null;
+};
+
+const findRoleAssignment = (
+  tokens: TokensState,
+  role: Role
+): { ownerId: string; targetId: string } | null => {
+  const candidates: Array<{ ownerId: string; targetId: string; order: number }> = [];
+  for (const [ownerId, suspects] of Object.entries(tokens.suspectRolesByPlayer)) {
+    for (const [targetId, assignedRole] of Object.entries(suspects)) {
+      if (assignedRole === role) {
+        const order = tokens.tokensByPlayer[ownerId]?.[targetId] ?? 0;
+        candidates.push({ ownerId, targetId, order });
+      }
+    }
   }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => a.order - b.order);
+  return { ownerId: candidates[0].ownerId, targetId: candidates[0].targetId };
 };
 
-const clearVotingTimer = (room: RoomContext) => {
-  if (room.votingTimer) {
-    clearTimeout(room.votingTimer);
-    room.votingTimer = undefined;
-  }
-};
-
-const resetParallelNight = (room: RoomContext) => {
-  room.parallelActions = {};
-  clearParallelTimer(room);
-  clearParallelResultTimer(room);
-};
-
-const finalizeVoting = (room: RoomContext) => {
-  if (!isPhase(room.state, "voting")) return;
-  const tally = computeVoteTally(room.state);
-  const eliminatedPlayerIds = computeEliminations(tally);
-  const winners = computeWinners(room.state, eliminatedPlayerIds);
-  const reveal = {
-    tally,
-    eliminatedPlayerIds,
-    winners,
-    finalRolesByPlayer: room.state.roles?.currentRolesByPlayer ?? {},
-    centerRoles:
-      room.state.roles?.centerRoles ?? (["villager", "villager", "villager"] as [Role, Role, Role]),
+const buildTokenPool = (roles: Role[]): Record<Role, number> => {
+  const pool: Record<Role, number> = {
+    villager: 0,
+    werewolf: 0,
+    minion: 0,
+    mason: 0,
+    doppleganger: 0,
+    seer: 0,
+    robber: 0,
+    drunk: 0,
+    troublemaker: 0,
+    insomniac: 0,
+    tanner: 0,
   };
-  room.state.reveal = reveal;
-  room.state.phase = "reveal";
-  room.state.phaseEndsAt = undefined;
-  clearVotingTimer(room);
-  touch(room.state);
-  emitRoomUpdate(room);
-};
-
-const finalizeParallelResult = (room: RoomContext) => {
-  if (!isPhase(room.state, "parallelResult")) return;
-  resetPrivateViews(room);
-  transitionToDiscussion(room);
-  emitRoomUpdate(room);
-};
-
-const startNightNow = (room: RoomContext) => {
-  clearNightCountdownTimer(room);
-  if (room.state.settings.parallelNight) {
-    startParallelNight(room);
-    return;
-  }
-
-  room.nightSteps = buildNightSteps(room.state);
-  if (room.nightSteps.length === 0) {
-    transitionToDiscussion(room);
-    emitRoomUpdate(room);
-    return;
-  }
-
-  const stepRole = room.nightSteps[0];
-  const completionByPlayer: Record<string, boolean> = {};
-  eligiblePlayersForNightRole(room.state, stepRole).forEach((id) => {
-    completionByPlayer[id] = false;
+  roles.forEach((role) => {
+    pool[role] = (pool[role] ?? 0) + 1;
   });
-
-  room.state.night = {
-    stepIndex: 0,
-    stepRole,
-    totalSteps: room.nightSteps.length,
-    completionByPlayer,
-    endsAt: now() + NIGHT_STEP_SECONDS * 1000,
-    mode: "sequential",
-  };
-  room.state.phase = "night";
-  room.state.phaseEndsAt = undefined;
-  resetPrivateViews(room);
-  resetParallelNight(room);
-  if (stepRole === "werewolf") {
-    setWerewolfPrivateViews(room);
-  }
-  touch(room.state);
-  emitRoomUpdate(room);
+  return pool;
 };
 
-const resetVoting = (state: GameState): VotingState => {
-  const voting: VotingState = createEmptyVotingState();
-  voting.votesByPlayer = Object.fromEntries(state.playerOrder.map((id) => [id, null]));
-  return voting;
+const countRoleAssignments = (tokens: TokensState, role: Role): number => {
+  let count = 0;
+  Object.values(tokens.suspectRolesByPlayer).forEach((suspects) => {
+    Object.values(suspects).forEach((assignedRole) => {
+      if (assignedRole === role) count += 1;
+    });
+  });
+  return count;
 };
-
-const resetTokens = (): TokensState => createEmptyTokensState();
 
 const buildNightSteps = (state: GameState): Role[] => {
   if (!state.roles) return [];
@@ -324,195 +309,9 @@ const buildNightSteps = (state: GameState): Role[] => {
   return NIGHT_ORDER.filter((role) => presentRoles.has(role));
 };
 
-const setWerewolfPrivateViews = (room: RoomContext) => {
-  if (!room.state.roles) return;
-  const wolves = eligiblePlayersForNightRole(room.state, "werewolf");
-  wolves.forEach((wolfId) => {
-    const others = wolves.filter((id) => id !== wolfId);
-    setPrivateView(room, wolfId, { kind: "werewolfSawWerewolves", werewolfIds: others });
-  });
-};
-
-const finalizeParallelNight = (room: RoomContext) => {
-  if (!room.state.night || room.state.night.mode !== "parallel" || !room.state.roles) {
-    return;
-  }
-  const completion = room.state.night.completionByPlayer;
-  const actions = room.parallelActions;
-  const views: Record<string, PrivateView> = {};
-
-  const wolves = eligiblePlayersForNightRole(room.state, "werewolf");
-  const isSoloWolf = wolves.length === 1;
-  wolves.forEach((wolfId) => {
-    if (!completion[wolfId]) return;
-    const action = actions[wolfId];
-    if (isSoloWolf && action?.kind === "werewolfSoloPeek") {
-      const role = room.state.roles?.centerRoles[action.centerIndex];
-      if (role) {
-        views[wolfId] = {
-          kind: "werewolfSoloPeek",
-          centerIndex: action.centerIndex,
-          role,
-        };
-        return;
-      }
-    }
-    const others = wolves.filter((id) => id !== wolfId);
-    views[wolfId] = { kind: "werewolfSawWerewolves", werewolfIds: others };
-  });
-
-  const minions = eligiblePlayersForNightRole(room.state, "minion");
-  minions.forEach((minionId) => {
-    if (!completion[minionId]) return;
-    views[minionId] = { kind: "minionSawWerewolves", werewolfIds: wolves };
-  });
-
-  const masons = eligiblePlayersForNightRole(room.state, "mason");
-  masons.forEach((masonId) => {
-    if (!completion[masonId]) return;
-    views[masonId] = { kind: "masonSawMasons", masonIds: masons.filter((id) => id !== masonId) };
-  });
-
-  const seers = eligiblePlayersForNightRole(room.state, "seer");
-  seers.forEach((seerId) => {
-    if (!completion[seerId]) return;
-    const action = actions[seerId];
-    if (!action) return;
-    if (action.kind === "seerViewPlayer") {
-      const role = getCurrentRole(room.state, action.targetPlayerId);
-      if (role) {
-        views[seerId] = {
-          kind: "seerViewPlayer",
-          targetPlayerId: action.targetPlayerId,
-          role,
-        };
-      }
-      return;
-    }
-    if (action.kind === "seerViewCenter") {
-      const [a, b] = action.centerIndices;
-      if (a === b) return;
-      views[seerId] = {
-        kind: "seerViewCenter",
-        center: [
-          { centerIndex: a, role: room.state.roles.centerRoles[a] },
-          { centerIndex: b, role: room.state.roles.centerRoles[b] },
-        ],
-      };
-    }
-  });
-
-  const robbers = eligiblePlayersForNightRole(room.state, "robber");
-  robbers.forEach((robberId) => {
-    if (!completion[robberId]) return;
-    const action = actions[robberId];
-    if (!action || action.kind !== "robberSwap") return;
-    const newRole = applyRobberSwap(room.state, robberId, action.targetPlayerId);
-    if (!newRole) return;
-    views[robberId] = { kind: "robberNewRole", role: newRole };
-  });
-
-  const troublemakers = eligiblePlayersForNightRole(room.state, "troublemaker");
-  troublemakers.forEach((troublemakerId) => {
-    if (!completion[troublemakerId]) return;
-    const action = actions[troublemakerId];
-    if (!action || action.kind !== "troublemakerSwap") return;
-    const [a, b] = action.targetPlayerIds;
-    if (a === b) return;
-    if (!room.state.playersById[a] || !room.state.playersById[b]) return;
-    applyTroublemakerSwap(room.state, a, b);
-  });
-
-  const insomniacs = eligiblePlayersForNightRole(room.state, "insomniac");
-  insomniacs.forEach((insomniacId) => {
-    if (!completion[insomniacId]) return;
-    const action = actions[insomniacId];
-    if (!action || action.kind !== "insomniacPeek") return;
-    const role = getCurrentRole(room.state, insomniacId);
-    if (!role) return;
-    views[insomniacId] = { kind: "insomniacFinalRole", role };
-  });
-
-  room.privateViews = views;
-  resetParallelNight(room);
-  room.state.phase = "parallelResult";
-  room.state.phaseEndsAt = now() + PARALLEL_RESULT_SECONDS * 1000;
-  room.state.night = undefined;
-  touch(room.state);
-  emitRoomUpdate(room);
-  if (room.state.settings.autoAdvanceNight) {
-    room.parallelResultTimer = setTimeout(
-      () => finalizeParallelResult(room),
-      PARALLEL_RESULT_SECONDS * 1000
-    );
-  }
-};
-
-const startParallelNight = (room: RoomContext) => {
-  room.nightSteps = buildNightSteps(room.state);
-  if (room.nightSteps.length === 0) {
-    transitionToDiscussion(room);
-    emitRoomUpdate(room);
-    return;
-  }
-  const completionByPlayer = Object.fromEntries(room.state.playerOrder.map((id) => [id, false]));
-
-  room.state.night = {
-    stepIndex: 0,
-    stepRole: null,
-    totalSteps: room.nightSteps.length,
-    completionByPlayer,
-    endsAt: now() + NIGHT_STEP_SECONDS * 1000,
-    mode: "parallel",
-  };
-  room.state.phase = "night";
-  room.state.phaseEndsAt = undefined;
-  resetPrivateViews(room);
-  resetParallelNight(room);
-
-  const wolves = eligiblePlayersForNightRole(room.state, "werewolf");
-  const isSolo = wolves.length === 1;
-  wolves.forEach((wolfId) => {
-    setPrivateView(room, wolfId, { kind: "werewolfSoloStatus", isSolo });
-  });
-
-  clearParallelTimer(room);
-  if (room.state.settings.autoAdvanceNight) {
-    room.parallelTimer = setTimeout(() => finalizeParallelNight(room), NIGHT_STEP_SECONDS * 1000);
-  }
-  touch(room.state);
-  emitRoomUpdate(room);
-};
-
-const DEFAULT_ROLE_POOL: Role[] = [
-  "werewolf",
-  "werewolf",
-  "minion",
-  "mason",
-  "mason",
-  "seer",
-  "robber",
-  "troublemaker",
-  "insomniac",
-  "villager",
-  "villager",
-];
-
-const buildDefaultDeck = (playerCount: number): Role[] => {
-  const needed = playerCount + 3;
-  const pool: Role[] = [...DEFAULT_ROLE_POOL];
-  while (pool.length < needed) {
-    pool.push("villager");
-  }
-  return shuffle(pool).slice(0, needed);
-};
-
 const assignRoles = (state: GameState) => {
   const playerCount = state.playerOrder.length;
-  const deck =
-    state.roleSelection.roles.length === playerCount + 3
-      ? [...state.roleSelection.roles]
-      : buildDefaultDeck(playerCount);
+  const deck = [...state.roleSelection.roles];
   if (deck.length !== playerCount + 3) {
     throw new Error("Invalid role selection");
   }
@@ -530,878 +329,914 @@ const assignRoles = (state: GameState) => {
   state.roles = roles;
 };
 
-const transitionToDiscussion = (room: RoomContext) => {
-  room.state.phase = "discussion";
-  room.state.phaseEndsAt = now() + room.state.settings.discussionSeconds * 1000;
-  room.state.night = undefined;
-  resetParallelNight(room);
-  clearNightCountdownTimer(room);
-  touch(room.state);
+const resetTokens = (roles: Role[]): TokensState => ({
+  tokensByPlayer: {},
+  suspectRolesByPlayer: {},
+  tokenPoolByRole: buildTokenPool(roles),
+});
+
+const resetVoting = (state: GameState): VotingState => ({
+  locked: false,
+  votesByPlayer: Object.fromEntries(state.playerOrder.map((id) => [id, null])),
+});
+
+const computeVoteTally = (state: GameState): Record<string, number> => {
+  const tally: Record<string, number> = {};
+  const votes = state.voting?.votesByPlayer ?? {};
+  Object.values(votes).forEach((target) => {
+    if (!target) return;
+    tally[target] = (tally[target] ?? 0) + 1;
+  });
+  return tally;
 };
 
-const attachSocketToPlayer = (socket: Socket, room: RoomContext, playerId: string) => {
-  const player = room.state.playersById[playerId];
-  if (!player) return;
-  player.socketId = socket.id;
-  player.connected = true;
-  socketLookup.set(socket.id, { roomCode: room.state.roomCode, playerId });
-  socket.join(room.state.roomCode);
+const computeEliminations = (tally: Record<string, number>): string[] => {
+  let topVotes = 0;
+  Object.values(tally).forEach((votes) => {
+    if (votes > topVotes) topVotes = votes;
+  });
+  if (topVotes === 0) return [];
+  return Object.entries(tally)
+    .filter(([, votes]) => votes === topVotes)
+    .map(([playerId]) => playerId);
 };
 
-const clearSocketRef = (socketId: string) => {
-  socketLookup.delete(socketId);
+const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): RevealState["winners"] => {
+  const roles = state.roles?.currentRolesByPlayer ?? {};
+  if (eliminatedPlayerIds.some((id) => roles[id] === "tanner")) {
+    return "tanner";
+  }
+  if (eliminatedPlayerIds.some((id) => roles[id] === "werewolf")) {
+    return "village";
+  }
+  const werewolves = Object.values(roles).filter((role) => role === "werewolf");
+  if (werewolves.length === 0) return "village";
+  return "werewolves";
 };
 
-io.on("connection", (socket) => {
-  log("socket connected", socket.id);
-
-  socket.on("disconnect", () => {
-    log("socket disconnected", socket.id);
-    const ref = socketLookup.get(socket.id);
-    if (!ref) return;
-    const room = ensureRoom(ref.roomCode);
-    if (!room) return;
-    const player = room.state.playersById[ref.playerId];
-    if (player) {
-      player.connected = false;
-      player.socketId = undefined;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-    clearSocketRef(socket.id);
-  });
-
-  socket.on("room:create", (payload: { gameName?: string; maxPlayers: number; name?: string }, ack?: (resp: { playerId: string; resumeSecret: string; roomCode: string }) => void) => {
-    const maxPlayers = Math.min(Math.max(payload?.maxPlayers ?? 8, 3), 10);
-    const host = createPlayer(payload.name?.trim() || "Host");
-    const roomCode = generateRoomCode();
-    const state = createRoomState(roomCode, host, maxPlayers);
-    state.gameName = payload?.gameName ?? state.gameName;
-    log("room:create", { roomCode, maxPlayers, gameName: state.gameName, hostId: host.playerId });
-
-    const room: RoomContext = { state, privateViews: {}, nightSteps: [], parallelActions: {} };
-    rooms.set(roomCode, room);
-
-    attachSocketToPlayer(socket, room, host.playerId);
-    emitRoomUpdate(room);
-    ack?.({ playerId: host.playerId, resumeSecret: host.resumeSecret, roomCode });
-  });
-
-  socket.on("room:join", (payload: { roomCode: string; name: string }, ack?: (resp: { playerId: string; resumeSecret: string; roomCode: string }) => void) => {
-    log("room:join", { roomCode: payload.roomCode, name: payload.name });
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return sendError(socket, "ROOM_NOT_FOUND", "Room not found.");
-    if (!isPhase(room.state, "lobby")) {
-      return sendError(socket, "ROOM_IN_PROGRESS", "Game already started.");
-    }
-    if (room.state.playerOrder.length >= room.state.maxPlayers) {
-      return sendError(socket, "ROOM_FULL", "Room is full.");
-    }
-    const name = (payload.name || "Player").trim().slice(0, 24);
-    if (!name) return sendError(socket, "INVALID_PAYLOAD", "Name required.");
-
-    const player = createPlayer(name);
-    room.state.playersById[player.playerId] = player;
-    room.state.playerOrder.push(player.playerId);
-    touch(room.state);
-
-    attachSocketToPlayer(socket, room, player.playerId);
-    emitRoomUpdate(room);
-    ack?.({ playerId: player.playerId, resumeSecret: player.resumeSecret, roomCode: room.state.roomCode });
-  });
-
-  socket.on(
-    "session:resume",
-    (
-      payload: { roomCode: string; playerId: string; resumeSecret: string },
-      ack?: (resp: { ok: boolean }) => void
-    ) => {
-      log("session:resume", { roomCode: payload.roomCode, playerId: payload.playerId });
-      const room = ensureRoom(payload.roomCode);
-      if (!room) {
-        sendError(socket, "ROOM_NOT_FOUND", "Room not found.");
-        ack?.({ ok: false });
-        return;
-      }
-      const player = room.state.playersById[payload.playerId];
-      if (!player || player.resumeSecret !== payload.resumeSecret) {
-        sendError(socket, "PLAYER_NOT_FOUND", "Resume credentials invalid.");
-        ack?.({ ok: false });
-        return;
-      }
-      attachSocketToPlayer(socket, room, player.playerId);
-      emitRoomUpdate(room);
-      ack?.({ ok: true });
-    }
-  );
-
-  socket.on("room:leave", (payload: { roomCode: string; playerId: string }) => {
-    log("room:leave", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    const player = room.state.playersById[payload.playerId];
-    if (!player) return;
-
-    const isHostPlayer = room.state.hostPlayerId === payload.playerId;
-
-    if (isHostPlayer) {
-      io.to(room.state.roomCode).emit("game:end");
-      resetParallelNight(room);
-      clearNightCountdownTimer(room);
-      clearVotingTimer(room);
-      // clean lookup and remove room
-      for (const [sid, ref] of socketLookup.entries()) {
-        if (ref.roomCode === room.state.roomCode) {
-          socketLookup.delete(sid);
-        }
-      }
-      rooms.delete(room.state.roomCode);
-      return;
-    }
-
-    if (isPhase(room.state, "lobby")) {
-      delete room.state.playersById[payload.playerId];
-      room.state.playerOrder = room.state.playerOrder.filter((id) => id !== payload.playerId);
-    } else {
-      player.connected = false;
-    }
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
-
-  socket.on("lobby:setName", (payload: { roomCode: string; playerId: string; name: string }) => {
-    log("lobby:setName", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isPhase(room.state, "lobby")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Cannot rename after game start.");
-    }
-    const player = room.state.playersById[payload.playerId];
-    if (!player) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-    const name = (payload.name || "").trim().slice(0, 24);
-    if (!name) return sendError(socket, "INVALID_PAYLOAD", "Name required.");
-    player.name = name;
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
-
-  socket.on(
-    "lobby:setReady",
-    (payload: { roomCode: string; playerId: string; ready: boolean }) => {
-      log("lobby:setReady", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room) return;
-      const player = room.state.playersById[payload.playerId];
-      if (!player) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-      player.ready = !!payload.ready;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "host:kickPlayer",
-    (payload: { roomCode: string; hostPlayerId: string; targetPlayerId: string }) => {
-      log("host:kickPlayer", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room) return;
-      if (!isHost(room.state, payload.hostPlayerId)) {
-        return sendError(socket, "NOT_HOST", "Host only.");
-      }
-      if (!isPhase(room.state, "lobby")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Can only kick players in the lobby.");
-      }
-      const target = room.state.playersById[payload.targetPlayerId];
-      if (!target) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-      if (payload.targetPlayerId === room.state.hostPlayerId) {
-        return sendError(socket, "INVALID_PAYLOAD", "Host cannot be kicked.");
-      }
-
-      delete room.state.playersById[payload.targetPlayerId];
-      room.state.playerOrder = room.state.playerOrder.filter((id) => id !== payload.targetPlayerId);
-      touch(room.state);
-      emitRoomUpdate(room);
-
-      if (target.socketId) {
-        const targetSocket = io.sockets.sockets.get(target.socketId);
-        if (targetSocket) {
-          targetSocket.emit("room:kicked");
-          targetSocket.leave(room.state.roomCode);
-          targetSocket.disconnect(true);
-          socketLookup.delete(target.socketId);
-        }
-      }
-    }
-  );
-
-  socket.on(
-    "host:updateSettings",
-    (payload: { roomCode: string; hostPlayerId: string; settings: GameSettings }) => {
-      log("host:updateSettings", { roomCode: payload.roomCode, host: payload.hostPlayerId });
-      const room = ensureRoom(payload.roomCode);
-      if (!room) return;
-      if (!isHost(room.state, payload.hostPlayerId)) {
-        return sendError(socket, "NOT_HOST", "Host only.");
-      }
-      if (!isPhase(room.state, "lobby")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Settings locked after start.");
-      }
-      room.state.settings = { ...room.state.settings, ...payload.settings };
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "host:updateRoles",
-    (payload: { roomCode: string; hostPlayerId: string; roles: Role[] }) => {
-      log("host:updateRoles", { roomCode: payload.roomCode, host: payload.hostPlayerId, count: payload.roles.length });
-      const room = ensureRoom(payload.roomCode);
-      if (!room) return;
-      if (!isHost(room.state, payload.hostPlayerId)) {
-        return sendError(socket, "NOT_HOST", "Host only.");
-      }
-      if (!isPhase(room.state, "lobby")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Cannot change roles after start.");
-      }
-      const allowed: Role[] = [
-        "villager",
-        "werewolf",
-        "minion",
-        "mason",
-        "seer",
-        "robber",
-        "troublemaker",
-        "insomniac",
-      ];
-      if (!payload.roles.every((r) => allowed.includes(r))) {
-        return sendError(socket, "INVALID_PAYLOAD", "Invalid role in selection.");
-      }
-      const needed = room.state.playerOrder.length + 3;
-      if (payload.roles.length !== needed) {
-        return sendError(socket, "INVALID_PAYLOAD", `Select exactly ${needed} roles (players + 3).`);
-      }
-      room.state.roleSelection = { roles: payload.roles };
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on("host:startGame", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:startGame", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    if (!isPhase(room.state, "lobby")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Already started.");
-    }
-    if (room.state.playerOrder.length < 3) {
-      return sendError(socket, "INVALID_PAYLOAD", "Need at least 3 players.");
-    }
-    const allReady = room.state.playerOrder.every(
-      (id) => id === payload.hostPlayerId || room.state.playersById[id]?.ready
+const startNight = (record: GameRecord) => {
+  record.nightSteps = buildNightSteps(record.state);
+  if (record.state.settings.parallelNight) {
+    const completionByPlayer = Object.fromEntries(
+      record.state.playerOrder.map((id) => [id, false])
     );
-    if (!allReady) {
-      return sendError(socket, "INVALID_PAYLOAD", "All players must be ready.");
-    }
-    const requiredRoles = room.state.playerOrder.length + 3;
-    if (room.state.roleSelection.roles.length !== requiredRoles) {
-      return sendError(socket, "INVALID_PAYLOAD", `Select exactly ${requiredRoles} roles.`);
-    }
-
-    try {
-      assignRoles(room.state);
-    } catch (err) {
-      return sendError(
-        socket,
-        "INVALID_PAYLOAD",
-        err instanceof Error ? err.message : "Invalid roles."
-      );
-    }
-
-    room.state.deal = { ackByPlayer: Object.fromEntries(room.state.playerOrder.map((id) => [id, false])) };
-    room.state.tokens = resetTokens();
-    room.state.voting = resetVoting(room.state);
-    resetPrivateViews(room);
-    resetParallelNight(room);
-    clearVotingTimer(room);
-    room.nightSteps = buildNightSteps(room.state);
-    room.state.night = undefined;
-    room.state.phase = "deal";
-    room.state.phaseEndsAt = undefined;
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
-
-  socket.on("player:ackRole", (payload: { roomCode: string; playerId: string }) => {
-    log("player:ackRole", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isPhase(room.state, "deal")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Not in deal phase.");
-    }
-    if (!room.state.deal) return;
-    if (!room.state.deal.ackByPlayer[payload.playerId]) {
-      room.state.deal.ackByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  });
-
-  socket.on("host:startNight", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:startNight", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    if (!isPhase(room.state, "deal")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Must be in deal phase.");
-    }
-
-    room.state.phase = "nightCountdown";
-    room.state.phaseEndsAt = now() + NIGHT_START_COUNTDOWN_SECONDS * 1000;
-    clearNightCountdownTimer(room);
-    room.nightCountdownTimer = setTimeout(() => {
-      startNightNow(room);
-    }, NIGHT_START_COUNTDOWN_SECONDS * 1000);
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
-
-  socket.on("host:advanceNightStep", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:advanceNightStep", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    if (isPhase(room.state, "parallelResult")) {
-      finalizeParallelResult(room);
-      return;
-    }
-    if (!isPhase(room.state, "night")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Not in night phase.");
-    }
-    if (!room.state.night) return;
-    if (room.state.night.mode === "parallel") {
-      finalizeParallelNight(room);
-      return;
-    }
-
-    const nextIndex = room.state.night.stepIndex + 1;
-    if (nextIndex >= room.nightSteps.length) {
-      transitionToDiscussion(room);
-      emitRoomUpdate(room);
-      return;
-    }
-
-    const stepRole = room.nightSteps[nextIndex];
-    const completionByPlayer: Record<string, boolean> = {};
-    eligiblePlayersForNightRole(room.state, stepRole).forEach((id) => {
-      completionByPlayer[id] = false;
-    });
-
-    room.state.night = {
-      stepIndex: nextIndex,
-      stepRole,
-      totalSteps: room.nightSteps.length,
+    record.state.night = {
+      stepIndex: 0,
+      stepRole: null,
+      totalSteps: record.nightSteps.length,
       completionByPlayer,
-      endsAt: now() + NIGHT_STEP_SECONDS * 1000,
+      endsAt: Date.now() + 10_000,
+      mode: "parallel",
+    };
+    if (record.state.settings.autoAdvanceNight) {
+      clearParallelNightTimer(record);
+      record.parallelNightTimer = setTimeout(() => {
+        advanceNightStep(record);
+      }, 10_000);
+    }
+    // Info-only roles get their info immediately in parallel mode.
+    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+    wolves.forEach((wolfId) => {
+      if (isPlayerAloneWerewolf(record.state, wolfId)) {
+        emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
+      } else {
+        const others = wolves.filter((id) => id !== wolfId);
+        emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
+      }
+    });
+    const minions = eligiblePlayersForNightRole(record.state, "minion");
+    minions.forEach((minionId) => {
+      emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
+    });
+    const masons = eligiblePlayersForNightRole(record.state, "mason");
+    masons.forEach((masonId) => {
+      emitPrivate(record, masonId, "MASON_SAW_MASONS", {
+        masonIds: masons.filter((id) => id !== masonId),
+      });
+    });
+  } else {
+    const stepRole = record.nightSteps[0] ?? null;
+    const completionByPlayer: Record<string, boolean> = {};
+    if (stepRole) {
+      eligiblePlayersForNightRole(record.state, stepRole).forEach((id) => {
+        completionByPlayer[id] = false;
+      });
+    }
+    record.state.night = {
+      stepIndex: 0,
+      stepRole,
+      totalSteps: record.nightSteps.length,
+      completionByPlayer,
+      endsAt: Date.now() + 10_000,
       mode: "sequential",
     };
-    resetPrivateViews(room);
-    resetParallelNight(room);
-    if (stepRole === "werewolf") {
-      setWerewolfPrivateViews(room);
+  }
+  record.state.phase = "night";
+  record.state.phaseEndsAt = undefined;
+};
+
+const advanceNightStep = (record: GameRecord) => {
+  if (!record.state.night) return;
+  if (record.state.night.mode === "parallel") {
+    record.state.phase = "parallelResult";
+    record.state.phaseEndsAt = Date.now() + 10_000;
+    record.state.night = undefined;
+    if (record.state.settings.autoAdvanceNight) {
+      clearParallelResultTimer(record);
+      record.parallelResultTimer = setTimeout(() => {
+        record.state.phase = "discussion";
+        record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+      }, 10_000);
     }
-    touch(room.state);
-    emitRoomUpdate(room);
+    return;
+  }
+
+  const nextIndex = record.state.night.stepIndex + 1;
+  if (nextIndex >= record.nightSteps.length) {
+    record.state.phase = "discussion";
+    record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+    record.state.night = undefined;
+    return;
+  }
+
+  const stepRole = record.nightSteps[nextIndex];
+  const completionByPlayer: Record<string, boolean> = {};
+  eligiblePlayersForNightRole(record.state, stepRole).forEach((id) => {
+    completionByPlayer[id] = false;
+  });
+  record.state.night = {
+    stepIndex: nextIndex,
+    stepRole,
+    totalSteps: record.nightSteps.length,
+    completionByPlayer,
+    endsAt: Date.now() + 10_000,
+    mode: "sequential",
+  };
+  if (stepRole === "werewolf") {
+    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+    wolves.forEach((wolfId) => {
+      if (isPlayerAloneWerewolf(record.state, wolfId)) {
+        emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
+      } else {
+        const others = wolves.filter((id) => id !== wolfId);
+        emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
+      }
+    });
+  }
+  if (stepRole === "minion") {
+    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+    eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+      emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
+    });
+  }
+  if (stepRole === "mason") {
+    const masons = eligiblePlayersForNightRole(record.state, "mason");
+    masons.forEach((masonId) => {
+      emitPrivate(record, masonId, "MASON_SAW_MASONS", {
+        masonIds: masons.filter((id) => id !== masonId),
+      });
+    });
+  }
+};
+
+const validateNightAction = (
+  record: GameRecord,
+  playerId: string,
+  action: NightActionPayload
+): string | null => {
+  if (!record.state.night || !record.state.roles) return "Night not active";
+  if (record.state.night.completionByPlayer[playerId]) return "Already completed";
+
+  const role = getOriginalRole(record.state, playerId);
+  if (!role) return "Missing role";
+
+  const allowedByRole: Record<string, Role[]> = {
+    done: [
+      "villager",
+      "minion",
+      "mason",
+      "werewolf",
+      "doppleganger",
+      "seer",
+      "robber",
+      "drunk",
+      "troublemaker",
+      "insomniac",
+      "tanner",
+    ],
+    dopplegangerCopy: ["doppleganger"],
+    werewolfSoloPeek: ["werewolf"],
+    seerViewPlayer: ["seer"],
+    seerViewCenter: ["seer"],
+    robberSwap: ["robber"],
+    drunkSwap: ["drunk"],
+    troublemakerSwap: ["troublemaker"],
+    insomniacPeek: ["insomniac"],
+  };
+
+  const allowed = allowedByRole[action.kind];
+  if (!allowed || !allowed.includes(role)) return "Not allowed for your role";
+
+  if (record.state.night.mode === "sequential") {
+    const stepRole = record.state.night.stepRole;
+    if (!stepRole) return "Night step missing";
+    const eligible = eligiblePlayersForNightRole(record.state, stepRole);
+    if (!eligible.includes(playerId)) return "Not your night step";
+  }
+
+  if (action.kind === "seerViewPlayer" && action.targetPlayerId === playerId) {
+    return "Cannot target self";
+  }
+  if (action.kind === "robberSwap" && action.targetPlayerId === playerId) {
+    return "Cannot target self";
+  }
+  if (action.kind === "troublemakerSwap") {
+    const [a, b] = action.targetPlayerIds;
+    if (a === b) return "Targets must differ";
+    if (a === playerId || b === playerId) return "Cannot target self";
+    if (!record.state.playersById[a] || !record.state.playersById[b]) return "Target missing";
+  }
+  if (action.kind === "seerViewPlayer" && !record.state.playersById[action.targetPlayerId]) {
+    return "Target missing";
+  }
+  if (action.kind === "robberSwap" && !record.state.playersById[action.targetPlayerId]) {
+    return "Target missing";
+  }
+  if (action.kind === "dopplegangerCopy" && !record.state.playersById[action.targetPlayerId]) {
+    return "Target missing";
+  }
+  if (action.kind === "seerViewCenter") {
+    const [a, b] = action.centerIndices;
+    if (a === b) return "Center indices must differ";
+  }
+
+  return null;
+};
+
+const handleNightAction = (record: GameRecord, playerId: string, action: NightActionPayload): PrivateView | null => {
+  if (!record.state.night || !record.state.roles) return null;
+  const mode = record.state.night.mode ?? "sequential";
+  const stepRole = mode === "parallel" ? getOriginalRole(record.state, playerId) : record.state.night.stepRole;
+  if (!stepRole) return null;
+
+  const markComplete = () => {
+    if (record.state.night?.completionByPlayer[playerId] !== undefined) {
+      record.state.night.completionByPlayer[playerId] = true;
+    }
+  };
+
+  switch (action.kind) {
+    case "done":
+      markComplete();
+      return { kind: "none" };
+    case "dopplegangerCopy": {
+      const targetRole = getOriginalRole(record.state, action.targetPlayerId);
+      if (!targetRole) return null;
+      record.state.roles.currentRolesByPlayer[playerId] = targetRole;
+      if (targetRole === "insomniac") {
+        record.dopplegangerInsomniac.add(playerId);
+      }
+      markComplete();
+      return { kind: "dopplegangerCopiedRole", role: targetRole };
+    }
+    case "werewolfSoloPeek": {
+      if (!isPlayerAloneWerewolf(record.state, playerId)) return null;
+      const role = record.state.roles.centerRoles[action.centerIndex];
+      markComplete();
+      return { kind: "werewolfSoloPeek", centerIndex: action.centerIndex, role };
+    }
+    case "seerViewPlayer": {
+      const role = getCurrentRole(record.state, action.targetPlayerId);
+      if (!role) return null;
+      markComplete();
+      return { kind: "seerViewPlayer", targetPlayerId: action.targetPlayerId, role };
+    }
+    case "seerViewCenter": {
+      const [a, b] = action.centerIndices;
+      if (a === b) return null;
+      markComplete();
+      return {
+        kind: "seerViewCenter",
+        center: [
+          { centerIndex: a, role: record.state.roles.centerRoles[a] },
+          { centerIndex: b, role: record.state.roles.centerRoles[b] },
+        ],
+      };
+    }
+    case "robberSwap": {
+      if (playerId === action.targetPlayerId) return null;
+      const newRole = applyRobberSwap(record.state, playerId, action.targetPlayerId);
+      if (!newRole) return null;
+      markComplete();
+      return { kind: "robberNewRole", role: newRole };
+    }
+    case "drunkSwap": {
+      applyDrunkSwap(record.state, playerId, action.centerIndex);
+      markComplete();
+      return { kind: "drunkSwapped", centerIndex: action.centerIndex };
+    }
+    case "troublemakerSwap": {
+      const [a, b] = action.targetPlayerIds;
+      if (a === b) return null;
+      if (!record.state.playersById[a] || !record.state.playersById[b]) return null;
+      applyTroublemakerSwap(record.state, a, b);
+      markComplete();
+      return { kind: "none" };
+    }
+    case "insomniacPeek": {
+      const role = getCurrentRole(record.state, playerId);
+      if (!role) return null;
+      markComplete();
+      return { kind: "insomniacFinalRole", role };
+    }
+    default:
+      return null;
+  }
+};
+
+const app = fastify({ logger: false });
+app.register(cors, { origin: true });
+
+app.post(
+  "/games",
+  {
+    schema: {
+      body: {
+        type: "object",
+        properties: { hostName: { type: "string" } },
+      },
+    },
+  },
+  async (request, reply) => {
+  const body = request.body as { hostName?: string };
+  const hostName = typeof body?.hostName === "string" ? body.hostName.trim() : "Host";
+  const roomCode = generateRoomCode();
+  const hostId = generateId();
+  const secret = generateSecret();
+
+  const state: GameState = {
+    roomCode,
+    gameName: `Room ${roomCode}`,
+    phase: "lobby",
+    phaseEndsAt: undefined,
+    hostPlayerId: hostId,
+    maxPlayers: 10,
+    playersById: {
+      [hostId]: { playerId: hostId, name: hostName, connected: true, ready: false },
+    },
+    playerOrder: [hostId],
+    settings: { ...DEFAULT_SETTINGS },
+    roleSelection: { roles: [] },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+    const record: GameRecord = {
+      state,
+      version: 0,
+      events: [],
+      secrets: new Map([[hostId, secret]]),
+      streams: new Set(),
+      privateStreams: new Map(),
+      privateViews: new Map(),
+      nightSteps: [],
+      dopplegangerInsomniac: new Set(),
+      historyLimit: Number.isFinite(HISTORY_LIMIT) && HISTORY_LIMIT > 0 ? HISTORY_LIMIT : 150,
+    };
+  games.set(roomCode, record);
+
+  const response: CreateGameResponse = {
+    gameId: roomCode,
+    host: { playerId: hostId, name: hostName, secret },
+    version: record.version,
+  };
+  return reply.code(201).send(response);
+  }
+);
+
+app.post(
+  "/games/:gameId/join",
+  {
+    schema: {
+      body: {
+        type: "object",
+        properties: { name: { type: "string" } },
+      },
+    },
+  },
+  async (request, reply) => {
+  const { gameId } = request.params as { gameId: string };
+  const record = games.get(gameId);
+  if (!record) {
+    return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
+  }
+  if (record.state.phase !== "lobby") {
+    return reply.code(400).send({ error: "ROOM_IN_PROGRESS", message: "Game already started" });
+  }
+
+  const body = request.body as { name?: string };
+  const name = typeof body?.name === "string" ? body.name.trim() : "Player";
+
+  const playerId = generateId();
+  const secret = generateSecret();
+  record.secrets.set(playerId, secret);
+
+  record.state.playersById[playerId] = {
+    playerId,
+    name,
+    connected: true,
+    ready: false,
+  };
+  record.state.playerOrder.push(playerId);
+  record.state.updatedAt = Date.now();
+
+  const response: JoinGameResponse = { playerId, name, secret, version: record.version };
+  appendEvent(record, "PLAYER_JOINED", { playerId, name });
+  return reply.code(201).send(response);
+  }
+);
+
+app.post(
+  "/games/:gameId/commands",
+  {
+    schema: {
+      body: {
+        type: "object",
+        required: ["playerId", "secret", "lastKnownVersion", "command"],
+        properties: {
+          playerId: { type: "string" },
+          secret: { type: "string" },
+          lastKnownVersion: { type: "number" },
+          command: {
+            type: "object",
+            required: ["type"],
+            properties: {
+              type: { type: "string" },
+              payload: { type: "object" },
+            },
+          },
+        },
+      },
+    },
+  },
+  async (request, reply) => {
+  const { gameId } = request.params as { gameId: string };
+  const record = games.get(gameId);
+  if (!record) {
+    return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
+  }
+
+  const body = request.body as CommandEnvelope;
+  if (!body?.playerId || !body?.secret || !body?.command) {
+    return reply.code(400).send({ error: "INVALID_PAYLOAD", message: "Missing fields" });
+  }
+  const expected = record.secrets.get(body.playerId);
+  if (!expected || expected !== body.secret) {
+    return reply.code(401).send({ error: "UNAUTHORIZED", message: "Invalid secret" });
+  }
+  if (body.lastKnownVersion !== record.version) {
+    return reply.code(409).send({
+      error: "VERSION_MISMATCH",
+      message: "Client is behind server state",
+      serverVersion: record.version,
+      replayFromVersion: body.lastKnownVersion,
+    });
+  }
+
+  const commandType = body.command.type;
+  const isHost = record.state.hostPlayerId === body.playerId;
+
+  if (commandType === "UPDATE_SETTINGS") {
+    if (!isHost || record.state.phase !== "lobby") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
+    }
+    const settings = (body.command as any).payload?.settings as Partial<GameSettings>;
+    record.state.settings = { ...record.state.settings, ...settings };
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "UPDATE_ROLES") {
+    if (!isHost || record.state.phase !== "lobby") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
+    }
+    const roles = (body.command as any).payload?.roles as Role[] | undefined;
+    if (!roles || roles.length === 0) {
+      return reply.code(400).send({ error: "INVALID_ROLES", message: "Roles required" });
+    }
+    record.state.roleSelection = { roles };
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "SET_READY") {
+    if (record.state.phase !== "lobby") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Ready only in lobby" });
+    }
+    const player = record.state.playersById[body.playerId];
+    if (player) {
+      player.ready = !!(body.command as any).payload?.ready;
+      record.state.updatedAt = Date.now();
+    }
+  }
+
+  if (commandType === "START_GAME") {
+    if (!isHost || record.state.phase !== "lobby") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
+    }
+    try {
+      assignRoles(record.state);
+    } catch (err) {
+      return reply.code(400).send({ error: "INVALID_ROLES", message: "Role selection invalid" });
+    }
+    record.state.phase = "deal";
+    record.state.deal = {
+      ackByPlayer: Object.fromEntries(record.state.playerOrder.map((id) => [id, false])),
+    };
+    record.state.tokens = resetTokens(record.state.roleSelection.roles);
+    record.state.voting = resetVoting(record.state);
+    record.state.updatedAt = Date.now();
+
+    record.state.playerOrder.forEach((playerId) => {
+      const role = getOriginalRole(record.state, playerId);
+      if (role) {
+        record.privateViews.set(playerId, { kind: "yourOriginalRole", role });
+        emitPrivate(record, playerId, "ROLE_ASSIGNED", { role });
+      }
+    });
+  }
+
+  if (commandType === "ACK_ROLE") {
+    if (record.state.phase !== "deal" || !record.state.deal) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Not in deal" });
+    }
+    if (!record.state.deal.ackByPlayer[body.playerId]) {
+      record.state.deal.ackByPlayer[body.playerId] = true;
+      record.state.updatedAt = Date.now();
+    }
+  }
+
+  if (commandType === "START_NIGHT") {
+    if (!isHost || record.state.phase !== "deal") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in deal" });
+    }
+    record.state.phase = "nightCountdown";
+    record.state.phaseEndsAt = Date.now() + 3000;
+    setTimeout(() => {
+      startNight(record);
+    }, 3000);
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "ADVANCE_NIGHT_STEP") {
+    if (!isHost || (record.state.phase !== "night" && record.state.phase !== "parallelResult")) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during night" });
+    }
+    if (record.state.phase === "night" && record.state.night?.stepRole === "insomniac") {
+      record.dopplegangerInsomniac.forEach((playerId) => {
+        const role = getCurrentRole(record.state, playerId);
+        if (role) {
+          const view: PrivateView = { kind: "insomniacFinalRole", role };
+          record.privateViews.set(playerId, view);
+          emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+        }
+      });
+      record.dopplegangerInsomniac.clear();
+    }
+    advanceNightStep(record);
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "NIGHT_ACTION") {
+    if (record.state.phase !== "night") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Not in night" });
+    }
+    const error = validateNightAction(record, body.playerId, (body.command as any).payload as NightActionPayload);
+    if (error) {
+      return reply.code(400).send({ error: "INVALID_ACTION", message: error });
+    }
+    const payload = (body.command as any).payload as NightActionPayload;
+    const view = handleNightAction(record, body.playerId, payload);
+    if (view) {
+      record.privateViews.set(body.playerId, view);
+      emitPrivate(record, body.playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+    }
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "PLACE_TOKEN") {
+    if (!record.state.tokens || !record.state.settings.tokensEnabled) {
+      return reply.code(400).send({ error: "TOKENS_DISABLED", message: "Tokens disabled" });
+    }
+    if (record.state.phase !== "discussion" && record.state.phase !== "voting") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Tokens only during discussion/voting" });
+    }
+    const targetId = (body.command as any).payload?.targetId as string | undefined;
+    const role = (body.command as any).payload?.role as Role | undefined;
+    if (!targetId || !role) {
+      return reply.code(400).send({ error: "INVALID_TOKEN", message: "Target and role required" });
+    }
+    const targetKind = getTargetKind(record.state, targetId);
+    if (targetKind === "invalid") {
+      return reply.code(400).send({ error: "INVALID_TARGET", message: "Invalid target" });
+    }
+    const tokens = record.state.tokens;
+    const ownerId = body.playerId;
+    const ownerTokens = tokens.tokensByPlayer[ownerId] ?? (tokens.tokensByPlayer[ownerId] = {});
+    const ownerSuspects =
+      tokens.suspectRolesByPlayer[ownerId] ?? (tokens.suspectRolesByPlayer[ownerId] = {});
+    const currentRole = ownerSuspects[targetId];
+    if (currentRole === role) {
+      removeTokenAssignment(tokens, ownerId, targetId);
+      record.state.updatedAt = Date.now();
+    } else {
+      const capacity = tokens.tokenPoolByRole[role] ?? 0;
+      const used = countRoleAssignments(tokens, role);
+      if (capacity > 0 && used >= capacity) {
+        const existing = findRoleAssignment(tokens, role);
+        if (existing) {
+          removeTokenAssignment(tokens, existing.ownerId, existing.targetId);
+        }
+      }
+      const order = Date.now();
+      ownerTokens[targetId] = order;
+      ownerSuspects[targetId] = role;
+      record.state.updatedAt = Date.now();
+    }
+  }
+
+  if (commandType === "REMOVE_TOKEN") {
+    if (!record.state.tokens || !record.state.settings.tokensEnabled) {
+      return reply.code(400).send({ error: "TOKENS_DISABLED", message: "Tokens disabled" });
+    }
+    if (record.state.phase !== "discussion" && record.state.phase !== "voting") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Tokens only during discussion/voting" });
+    }
+    const targetId = (body.command as any).payload?.targetId as string | undefined;
+    if (!targetId) {
+      return reply.code(400).send({ error: "INVALID_TOKEN", message: "Target required" });
+    }
+    removeTokenAssignment(record.state.tokens, body.playerId, targetId);
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "CLEAR_TOKENS") {
+    if (!record.state.tokens || !record.state.settings.tokensEnabled) {
+      return reply.code(400).send({ error: "TOKENS_DISABLED", message: "Tokens disabled" });
+    }
+    if (record.state.phase !== "discussion" && record.state.phase !== "voting") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Tokens only during discussion/voting" });
+    }
+    const tokens = record.state.tokens;
+    delete tokens.tokensByPlayer[body.playerId];
+    delete tokens.suspectRolesByPlayer[body.playerId];
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "START_VOTING") {
+    if (!isHost || record.state.phase !== "discussion") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during discussion" });
+    }
+    record.state.phase = "voting";
+    record.state.voting = resetVoting(record.state);
+    record.state.phaseEndsAt = Date.now() + 20_000;
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "SUBMIT_VOTE") {
+    if (record.state.phase !== "voting" || !record.state.voting) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Not in voting" });
+    }
+    if (record.state.voting.locked) {
+      return reply.code(400).send({ error: "VOTING_LOCKED", message: "Votes locked" });
+    }
+    const targetPlayerId = (body.command as any).payload?.targetPlayerId as string | undefined;
+    if (!targetPlayerId || !record.state.playersById[targetPlayerId]) {
+      return reply.code(400).send({ error: "INVALID_TARGET", message: "Invalid target" });
+    }
+    if (!record.state.settings.allowVoteChanges && record.state.voting.votesByPlayer[body.playerId]) {
+      return reply.code(400).send({ error: "VOTE_ALREADY_CAST", message: "Vote already cast" });
+    }
+    record.state.voting.votesByPlayer[body.playerId] = targetPlayerId;
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "LOCK_VOTES") {
+    if (!isHost || record.state.phase !== "voting" || !record.state.voting) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during voting" });
+    }
+    record.state.voting.locked = !!(body.command as any).payload?.locked;
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "REVEAL_RESULTS") {
+    if (!isHost || record.state.phase !== "voting" || !record.state.voting) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during voting" });
+    }
+    const tally = computeVoteTally(record.state);
+    const eliminatedPlayerIds = computeEliminations(tally);
+    const winners = computeWinners(record.state, eliminatedPlayerIds);
+    record.state.reveal = {
+      tally,
+      eliminatedPlayerIds,
+      winners,
+      finalRolesByPlayer: record.state.roles?.currentRolesByPlayer ?? {},
+      centerRoles: record.state.roles?.centerRoles ?? ["villager", "villager", "villager"],
+    };
+    record.state.phase = "reveal";
+    record.state.phaseEndsAt = undefined;
+    record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "RESET_GAME") {
+    if (!isHost) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only" });
+    }
+    clearParallelResultTimer(record);
+    clearParallelNightTimer(record);
+    record.state.phase = "lobby";
+    record.state.phaseEndsAt = undefined;
+    record.state.roles = undefined;
+    record.state.deal = undefined;
+    record.state.night = undefined;
+    record.state.voting = undefined;
+    record.state.reveal = undefined;
+    record.state.tokens = resetTokens(record.state.roleSelection.roles);
+    record.state.playerOrder.forEach((id) => {
+      const player = record.state.playersById[id];
+      if (player) player.ready = false;
+    });
+    record.state.updatedAt = Date.now();
+  }
+
+  const event = appendEvent(record, commandType, { playerId: body.playerId, command: body.command });
+  const response: CommandResponse = {
+    accepted: true,
+    appliedVersion: record.version,
+    events: [event],
+  };
+  return reply.code(202).send(response);
+  }
+);
+
+app.get(
+  "/games/:gameId/snapshot",
+  {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          playerId: { type: "string" },
+          secret: { type: "string" },
+        },
+      },
+    },
+  },
+  async (request, reply) => {
+  const { gameId } = request.params as { gameId: string };
+  const record = games.get(gameId);
+  if (!record) {
+    return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
+  }
+  const { playerId, secret } = request.query as { playerId?: string; secret?: string };
+  const response: SnapshotResponse = {
+    version: record.version,
+    state: buildPublicState(record.state),
+  };
+  if (playerId && secret) {
+    const expected = record.secrets.get(playerId);
+    if (expected && expected === secret) {
+      const view = record.privateViews.get(playerId);
+      if (view) response.private = view;
+    }
+  }
+  return reply.code(200).send(response);
+  }
+);
+
+app.get(
+  "/games/:gameId/events",
+  {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: { since: { type: "string" } },
+      },
+    },
+  },
+  async (request, reply) => {
+  const { gameId } = request.params as { gameId: string };
+  const record = games.get(gameId);
+  if (!record) {
+    return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
+  }
+  const { since } = request.query as { since?: string };
+  const sinceVersion = Number(since ?? "0");
+  const oldest = record.events.length > 0 ? record.events[0].version : record.version;
+  if (sinceVersion < oldest - 1) {
+    return reply.code(410).send({ error: "HISTORY_EXPIRED", message: "History expired" });
+  }
+  const events = record.events.filter(
+    (event) => event.version > sinceVersion && !("targetPlayerId" in event.payload)
+  );
+  const response: EventBatch = {
+    fromVersion: sinceVersion,
+    toVersion: record.version,
+    events,
+  };
+  return reply.code(200).send(response);
+  }
+);
+
+app.get(
+  "/games/:gameId/stream",
+  {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          since: { type: "string" },
+          playerId: { type: "string" },
+          secret: { type: "string" },
+        },
+      },
+    },
+  },
+  async (request, reply) => {
+  const { gameId } = request.params as { gameId: string };
+  const record = games.get(gameId);
+  if (!record) {
+    return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
+  }
+
+  const { playerId, secret } = request.query as { playerId?: string; secret?: string };
+  if ((playerId && !secret) || (!playerId && secret)) {
+    return reply.code(401).send({ error: "UNAUTHORIZED", message: "Missing auth" });
+  }
+  if (playerId && secret) {
+    const expected = record.secrets.get(playerId);
+    if (!expected || expected !== secret) {
+      return reply.code(401).send({ error: "UNAUTHORIZED", message: "Invalid secret" });
+    }
+  }
+  const since = Number((request.query as { since?: string }).since ?? "0");
+  const oldest = record.events.length > 0 ? record.events[0].version : record.version;
+  if (since < oldest - 1) {
+    return reply.code(410).send({ error: "HISTORY_EXPIRED", message: "History expired" });
+  }
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
   });
 
-  socket.on("night:action:done", (payload: { roomCode: string; playerId: string }) => {
-    log("night:action:done", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room || !room.state.night) return;
-    if (!isPhase(room.state, "night")) return;
-    const isParallel = room.state.night.mode === "parallel";
-    const player = room.state.playersById[payload.playerId];
-    if (!player) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-    if (room.state.night.completionByPlayer[payload.playerId]) {
-      return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-    }
+  record.streams.add(reply.raw);
+  if (playerId) {
+    const existing = record.privateStreams.get(playerId) ?? new Set();
+    existing.add(reply.raw);
+    record.privateStreams.set(playerId, existing);
+  }
 
-    if (isParallel) {
-      const role = getOriginalRole(room.state, payload.playerId);
-      if (!role) return sendError(socket, "INVALID_TARGET", "Role missing.");
-      if (!["werewolf", "minion", "mason", "villager"].includes(role)) {
-        return sendError(socket, "INVALID_TARGET", "Not your action.");
-      }
-      room.parallelActions[payload.playerId] = { kind: "done" };
-      room.state.night.completionByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
+  sendSse(reply.raw, "hello", { serverVersion: record.version });
+  const backlog = record.events.filter((event) => event.version > since);
+  backlog.forEach((event) => {
+    const targetPlayerId = (event.payload as { targetPlayerId?: string }).targetPlayerId;
+    if (!targetPlayerId) {
+      sendSse(reply.raw, "public", event);
       return;
     }
-
-    const stepRole = room.state.night.stepRole;
-    if (!stepRole) return;
-    const eligible = eligiblePlayersForNightRole(room.state, stepRole);
-    if (!eligible.includes(payload.playerId)) {
-      return sendError(socket, "INVALID_TARGET", "Not your step.");
+    if (playerId && targetPlayerId === playerId) {
+      sendSse(reply.raw, "private", event);
     }
-    if (stepRole === "mason") {
-      const masonIds = eligible.filter((id) => id !== payload.playerId);
-      setPrivateView(room, payload.playerId, { kind: "masonSawMasons", masonIds });
-    }
-    if (stepRole === "minion") {
-      const wolves = eligiblePlayersForNightRole(room.state, "werewolf");
-      setPrivateView(room, payload.playerId, { kind: "minionSawWerewolves", werewolfIds: wolves });
-    }
-    room.state.night.completionByPlayer[payload.playerId] = true;
-    touch(room.state);
-    emitRoomUpdate(room);
   });
 
-  socket.on(
-    "night:werewolf:soloPeek",
-    (payload: { roomCode: string; playerId: string; centerIndex: 0 | 1 | 2 }) => {
-      log("night:werewolf:soloPeek", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.night || !room.state.roles) return;
-      if (!isPhase(room.state, "night")) return;
-      const isParallel = room.state.night.mode === "parallel";
-      const playerId = payload.playerId;
-      if (!isParallel && room.state.night.stepRole !== "werewolf") {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
-      }
-      if (!isPlayerAloneWerewolf(room.state, playerId)) {
-        return sendError(socket, "INVALID_TARGET", "Only a lone werewolf may peek.");
-      }
-      if (room.state.night.completionByPlayer[playerId]) {
-        return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-      }
-      if (isParallel) {
-        room.parallelActions[playerId] = { kind: "werewolfSoloPeek", centerIndex: payload.centerIndex };
-      } else {
-        const centerRole = room.state.roles.centerRoles[payload.centerIndex];
-        setPrivateView(room, playerId, {
-          kind: "werewolfSoloPeek",
-          centerIndex: payload.centerIndex,
-          role: centerRole,
-        });
-      }
-      room.state.night.completionByPlayer[playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
+  const heartbeat = setInterval(() => {
+    sendSse(reply.raw, "heartbeat", { serverTime: nowIso() });
+  }, 15000);
 
-  socket.on(
-    "night:seer:viewPlayer",
-    (payload: { roomCode: string; playerId: string; targetPlayerId: string }) => {
-      log("night:seer:viewPlayer", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.night || !room.state.roles) return;
-      const isParallel = room.state.night.mode === "parallel";
-      if (!isParallel && room.state.night.stepRole !== "seer") {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
+  request.raw.on("close", () => {
+    clearInterval(heartbeat);
+    record.streams.delete(reply.raw);
+    if (playerId) {
+      const existing = record.privateStreams.get(playerId);
+      if (existing) {
+        existing.delete(reply.raw);
+        if (existing.size === 0) record.privateStreams.delete(playerId);
       }
-      const eligible = eligiblePlayersForNightRole(room.state, "seer");
-      if (!eligible.includes(payload.playerId)) {
-        return sendError(socket, "INVALID_TARGET", "Not your action.");
-      }
-      if (room.state.night.completionByPlayer[payload.playerId]) {
-        return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-      }
-      const role = getCurrentRole(room.state, payload.targetPlayerId);
-      if (!role) return sendError(socket, "PLAYER_NOT_FOUND", "Target missing.");
-      if (isParallel) {
-        room.parallelActions[payload.playerId] = {
-          kind: "seerViewPlayer",
-          targetPlayerId: payload.targetPlayerId,
-        };
-      } else {
-        setPrivateView(room, payload.playerId, {
-          kind: "seerViewPlayer",
-          targetPlayerId: payload.targetPlayerId,
-          role,
-        });
-      }
-      room.state.night.completionByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
     }
-  );
-
-  socket.on(
-    "night:seer:viewCenter",
-    (payload: { roomCode: string; playerId: string; centerIndices: [0 | 1 | 2, 0 | 1 | 2] }) => {
-      log("night:seer:viewCenter", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.night || !room.state.roles) return;
-      const isParallel = room.state.night.mode === "parallel";
-      if (!isParallel && room.state.night.stepRole !== "seer") {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
-      }
-      const eligible = eligiblePlayersForNightRole(room.state, "seer");
-      if (!eligible.includes(payload.playerId)) {
-        return sendError(socket, "INVALID_TARGET", "Not your action.");
-      }
-      if (room.state.night.completionByPlayer[payload.playerId]) {
-        return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-      }
-      const [a, b] = payload.centerIndices;
-      if (a === b) return sendError(socket, "INVALID_PAYLOAD", "Indices must differ.");
-      if (isParallel) {
-        room.parallelActions[payload.playerId] = { kind: "seerViewCenter", centerIndices: payload.centerIndices };
-      } else {
-        const results = [
-          { centerIndex: a, role: room.state.roles.centerRoles[a] },
-          { centerIndex: b, role: room.state.roles.centerRoles[b] },
-        ];
-        setPrivateView(room, payload.playerId, { kind: "seerViewCenter", center: results });
-      }
-      room.state.night.completionByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "night:robber:swap",
-    (payload: { roomCode: string; playerId: string; targetPlayerId: string }) => {
-      log("night:robber:swap", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.night) return;
-      const isParallel = room.state.night.mode === "parallel";
-      if (!isParallel && room.state.night.stepRole !== "robber") {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
-      }
-      const eligible = eligiblePlayersForNightRole(room.state, "robber");
-      if (!eligible.includes(payload.playerId)) {
-        return sendError(socket, "INVALID_TARGET", "Not your action.");
-      }
-      if (room.state.night.completionByPlayer[payload.playerId]) {
-        return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-      }
-      if (isParallel) {
-        if (payload.playerId === payload.targetPlayerId) {
-          return sendError(socket, "INVALID_TARGET", "Cannot swap with yourself.");
-        }
-        if (!room.state.playersById[payload.targetPlayerId]) {
-          return sendError(socket, "PLAYER_NOT_FOUND", "Target missing.");
-        }
-        room.parallelActions[payload.playerId] = {
-          kind: "robberSwap",
-          targetPlayerId: payload.targetPlayerId,
-        };
-      } else {
-        const newRole = applyRobberSwap(room.state, payload.playerId, payload.targetPlayerId);
-        if (!newRole) return sendError(socket, "INVALID_TARGET", "Swap failed.");
-        setPrivateView(room, payload.playerId, { kind: "robberNewRole", role: newRole });
-      }
-      room.state.night.completionByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "night:troublemaker:swap",
-    (payload: { roomCode: string; playerId: string; targetPlayerIds: [string, string] }) => {
-      log("night:troublemaker:swap", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.night) return;
-      const isParallel = room.state.night.mode === "parallel";
-      if (!isParallel && room.state.night.stepRole !== "troublemaker") {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
-      }
-      const eligible = eligiblePlayersForNightRole(room.state, "troublemaker");
-      if (!eligible.includes(payload.playerId)) {
-        return sendError(socket, "INVALID_TARGET", "Not your action.");
-      }
-      if (room.state.night.completionByPlayer[payload.playerId]) {
-        return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-      }
-      const [a, b] = payload.targetPlayerIds;
-      if (a === b) return sendError(socket, "INVALID_PAYLOAD", "Targets must differ.");
-      if (!room.state.playersById[a] || !room.state.playersById[b]) {
-        return sendError(socket, "PLAYER_NOT_FOUND", "Target missing.");
-      }
-      if (isParallel) {
-        room.parallelActions[payload.playerId] = { kind: "troublemakerSwap", targetPlayerIds: [a, b] };
-      } else {
-        applyTroublemakerSwap(room.state, a, b);
-      }
-      room.state.night.completionByPlayer[payload.playerId] = true;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on("night:insomniac:peekFinal", (payload: { roomCode: string; playerId: string }) => {
-    log("night:insomniac:peekFinal", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room || !room.state.night) return;
-    const isParallel = room.state.night.mode === "parallel";
-    if (!isParallel && room.state.night.stepRole !== "insomniac") {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Wrong night step.");
-    }
-    const eligible = eligiblePlayersForNightRole(room.state, "insomniac");
-    if (!eligible.includes(payload.playerId)) {
-      return sendError(socket, "INVALID_TARGET", "Not your action.");
-    }
-    if (room.state.night.completionByPlayer[payload.playerId]) {
-      return sendError(socket, "ALREADY_SUBMITTED", "Already completed.");
-    }
-    if (isParallel) {
-      room.parallelActions[payload.playerId] = { kind: "insomniacPeek" };
-    } else {
-      const role = getCurrentRole(room.state, payload.playerId);
-      if (!role) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-      setPrivateView(room, payload.playerId, { kind: "insomniacFinalRole", role });
-    }
-    room.state.night.completionByPlayer[payload.playerId] = true;
-    touch(room.state);
-    emitRoomUpdate(room);
   });
 
-  socket.on("host:startVoting", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:startVoting", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    if (isPhase(room.state, "night") && room.state.night?.mode === "parallel") {
-      finalizeParallelNight(room);
-    }
-    if (!isPhase(room.state, "discussion")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Must be in discussion.");
-    }
-    room.state.phase = "voting";
-    room.state.voting = resetVoting(room.state);
-    room.state.phaseEndsAt = now() + VOTING_SECONDS * 1000;
-    clearVotingTimer(room);
-    if (room.state.settings.autoAdvanceNight) {
-      room.votingTimer = setTimeout(() => finalizeVoting(room), VOTING_SECONDS * 1000);
-    }
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
+    reply.hijack();
+  }
+);
 
-  socket.on(
-    "host:lockVotes",
-    (payload: { roomCode: string; hostPlayerId: string; locked: boolean }) => {
-      log("host:lockVotes", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room) return;
-      if (!isHost(room.state, payload.hostPlayerId)) {
-        return sendError(socket, "NOT_HOST", "Host only.");
-      }
-      if (!isPhase(room.state, "voting")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Not in voting.");
-      }
-      if (!room.state.voting) return;
-      room.state.voting.locked = !!payload.locked;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "vote:submit",
-    (payload: { roomCode: string; playerId: string; targetPlayerId: string }) => {
-      log("vote:submit", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.voting) return;
-      if (!isPhase(room.state, "voting")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Not in voting.");
-      }
-      const voting = room.state.voting;
-      if (voting.locked) return sendError(socket, "VOTING_LOCKED", "Votes are locked.");
-      const player = room.state.playersById[payload.playerId];
-      if (!player) return sendError(socket, "PLAYER_NOT_FOUND", "Player missing.");
-      if (!room.state.playersById[payload.targetPlayerId]) {
-        return sendError(socket, "INVALID_TARGET", "Target missing.");
-      }
-      if (!room.state.settings.allowVoteChanges && voting.votesByPlayer[payload.playerId]) {
-        return sendError(socket, "INVALID_PAYLOAD", "Vote already submitted.");
-      }
-      voting.votesByPlayer[payload.playerId] = payload.targetPlayerId;
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on("host:reveal", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:reveal", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    if (!isPhase(room.state, "voting")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Reveal after voting.");
-    }
-    finalizeVoting(room);
-  });
-
-  socket.on("host:resetGame", (payload: { roomCode: string; hostPlayerId: string }) => {
-    log("host:resetGame", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room) return;
-    if (!isHost(room.state, payload.hostPlayerId)) {
-      return sendError(socket, "NOT_HOST", "Host only.");
-    }
-    room.state.phase = "lobby";
-    room.state.phaseEndsAt = undefined;
-    room.state.roles = undefined;
-    room.state.deal = undefined;
-    room.state.night = undefined;
-    room.state.phaseEndsAt = undefined;
-    room.state.voting = undefined;
-    room.state.reveal = undefined;
-    room.state.tokens = resetTokens();
-    room.state.playersById = Object.fromEntries(
-      room.state.playerOrder.map((id) => {
-        const player = room.state.playersById[id];
-        return [
-          id,
-          {
-            ...player,
-            ready: false,
-          },
-        ];
-      })
-    );
-    resetPrivateViews(room);
-    resetParallelNight(room);
-    clearNightCountdownTimer(room);
-    clearVotingTimer(room);
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
-
-  socket.on(
-    "discussion:token:add",
-    (payload: { roomCode: string; playerId: string; targetPlayerId: string; role?: Role }) => {
-      log("discussion:token:add", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.tokens) return;
-      if (!isPhase(room.state, "discussion") && !isPhase(room.state, "voting")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Tokens only during discussion/voting.");
-      }
-      if (isPhase(room.state, "voting") && payload.playerId === payload.targetPlayerId) {
-        return sendError(socket, "INVALID_TARGET", "Cannot target self during voting.");
-      }
-      if (!room.state.settings.tokensEnabled) {
-        return sendError(socket, "INVALID_PAYLOAD", "Tokens disabled.");
-      }
-      const isCenterTarget = payload.targetPlayerId.startsWith("center-");
-      const centerIndex = isCenterTarget ? Number(payload.targetPlayerId.split("center-")[1]) : -1;
-      if (!isCenterTarget) {
-        if (!room.state.playersById[payload.targetPlayerId]) {
-          return sendError(socket, "INVALID_TARGET", "Target missing.");
-        }
-      } else if (Number.isNaN(centerIndex) || centerIndex < 0 || centerIndex > 2) {
-        return sendError(socket, "INVALID_TARGET", "Center index missing.");
-      }
-      const ownerTokens =
-        room.state.tokens.tokensByPlayer[payload.playerId] ??
-        (room.state.tokens.tokensByPlayer[payload.playerId] = {});
-      const ownerSuspect =
-        room.state.tokens.suspectRolesByPlayer[payload.playerId] ??
-        (room.state.tokens.suspectRolesByPlayer[payload.playerId] = {});
-
-      const clearAssignment = (ownerId: string, targetId: string) => {
-        if (room.state.tokens.tokensByPlayer[ownerId]) {
-          delete room.state.tokens.tokensByPlayer[ownerId][targetId];
-          if (Object.keys(room.state.tokens.tokensByPlayer[ownerId]).length === 0) {
-            delete room.state.tokens.tokensByPlayer[ownerId];
-          }
-        }
-        if (room.state.tokens.suspectRolesByPlayer[ownerId]) {
-          delete room.state.tokens.suspectRolesByPlayer[ownerId][targetId];
-          if (Object.keys(room.state.tokens.suspectRolesByPlayer[ownerId]).length === 0) {
-            delete room.state.tokens.suspectRolesByPlayer[ownerId];
-          }
-        }
-      };
-
-      if (payload.role) {
-        const existingForTarget = ownerSuspect[payload.targetPlayerId];
-        if (existingForTarget === payload.role) {
-          clearAssignment(payload.playerId, payload.targetPlayerId);
-          touch(room.state);
-          emitRoomUpdate(room);
-          return;
-        }
-        Object.entries(room.state.tokens.suspectRolesByPlayer).forEach(([ownerId, suspects]) => {
-          Object.entries(suspects).forEach(([targetId, role]) => {
-            if (targetId === payload.targetPlayerId) {
-              clearAssignment(ownerId, targetId);
-              return;
-            }
-            if (role === payload.role) {
-              if (payload.role === "villager" || payload.role === "mason" || payload.role === "werewolf") {
-                return;
-              }
-              clearAssignment(ownerId, targetId);
-            }
-          });
-        });
-      }
-
-      ownerTokens[payload.targetPlayerId] = 1;
-      if (payload.role) {
-        ownerSuspect[payload.targetPlayerId] = payload.role;
-      }
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on(
-    "discussion:token:remove",
-    (payload: { roomCode: string; playerId: string; targetPlayerId: string }) => {
-      log("discussion:token:remove", payload);
-      const room = ensureRoom(payload.roomCode);
-      if (!room || !room.state.tokens) return;
-      if (!isPhase(room.state, "discussion") && !isPhase(room.state, "voting")) {
-        return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Tokens only during discussion/voting.");
-      }
-      const ownerTokens = room.state.tokens.tokensByPlayer[payload.playerId];
-      const ownerSuspect = room.state.tokens.suspectRolesByPlayer[payload.playerId];
-      if (!ownerTokens || !ownerTokens[payload.targetPlayerId]) return;
-      ownerTokens[payload.targetPlayerId] = Math.max(0, (ownerTokens[payload.targetPlayerId] ?? 0) - 1);
-      if (ownerTokens[payload.targetPlayerId] === 0 && ownerSuspect) {
-        delete ownerSuspect[payload.targetPlayerId];
-      }
-      touch(room.state);
-      emitRoomUpdate(room);
-    }
-  );
-
-  socket.on("discussion:token:clearAll", (payload: { roomCode: string; playerId: string }) => {
-    log("discussion:token:clearAll", payload);
-    const room = ensureRoom(payload.roomCode);
-    if (!room || !room.state.tokens) return;
-    if (!isPhase(room.state, "discussion") && !isPhase(room.state, "voting")) {
-      return sendError(socket, "NOT_ALLOWED_IN_PHASE", "Tokens only during discussion/voting.");
-    }
-    delete room.state.tokens.tokensByPlayer[payload.playerId];
-    delete room.state.tokens.suspectRolesByPlayer[payload.playerId];
-    touch(room.state);
-    emitRoomUpdate(room);
-  });
+app.setNotFoundHandler((_, reply) => {
+  reply.code(404).send({ error: "NOT_FOUND", message: "Route not found" });
 });
 
-httpServer.listen(PORT, () => {
-  log(`Socket server listening on :${PORT}`);
+app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
+  if (err) {
+    console.error(err);
+    process.exit(1);
+  }
+  console.log(`[server] Fastify REST + SSE listening on :${PORT}`);
 });
-
-export { io, rooms };

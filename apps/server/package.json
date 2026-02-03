@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "socket.io": "^4.7.5"
+    "@fastify/cors": "^9.0.0",
+    "fastify": "^4.26.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

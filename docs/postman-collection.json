@@ -1,0 +1,671 @@
+{
+  "info": {
+    "name": "Werewolf API (Complete Flow)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "gameId", "value": "" },
+    { "key": "hostPlayerId", "value": "" },
+    { "key": "hostSecret", "value": "" },
+    { "key": "player1Id", "value": "" },
+    { "key": "player1Secret", "value": "" },
+    { "key": "player2Id", "value": "" },
+    { "key": "player2Secret", "value": "" },
+    { "key": "player3Id", "value": "" },
+    { "key": "player3Secret", "value": "" },
+    { "key": "lastVersion", "value": "0" }
+  ],
+  "item": [
+    {
+      "name": "01 - Setup",
+      "item": [
+        {
+          "name": "Create Game",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"hostName\": \"Host\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('gameId', json.gameId);",
+                  "pm.collectionVariables.set('hostPlayerId', json.host.playerId);",
+                  "pm.collectionVariables.set('hostSecret', json.host.secret);",
+                  "pm.collectionVariables.set('lastVersion', json.version.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join Game (Player 1)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/join",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Player 1\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('player1Id', json.playerId);",
+                  "pm.collectionVariables.set('player1Secret', json.secret);",
+                  "pm.collectionVariables.set('lastVersion', json.version.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join Game (Player 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/join",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Player 2\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('player2Id', json.playerId);",
+                  "pm.collectionVariables.set('player2Secret', json.secret);",
+                  "pm.collectionVariables.set('lastVersion', json.version.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Join Game (Player 3)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/join",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Player 3\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('player3Id', json.playerId);",
+                  "pm.collectionVariables.set('player3Secret', json.secret);",
+                  "pm.collectionVariables.set('lastVersion', json.version.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Lobby",
+      "item": [
+        {
+          "name": "Host Update Roles (4 players => 7 roles)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"UPDATE_ROLES\",\n    \"payload\": {\n      \"roles\": [\"werewolf\", \"seer\", \"robber\", \"drunk\", \"villager\", \"villager\", \"tanner\"]\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player 1 Ready",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"SET_READY\",\n    \"payload\": { \"ready\": true }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player 2 Ready",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player2Id}}\",\n  \"secret\": \"{{player2Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"SET_READY\",\n    \"payload\": { \"ready\": true }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player 3 Ready",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player3Id}}\",\n  \"secret\": \"{{player3Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"SET_READY\",\n    \"payload\": { \"ready\": true }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Host Start Game",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"START_GAME\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Deal",
+      "item": [
+        {
+          "name": "Host Snapshot (Auth) - See Role",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot?playerId={{hostPlayerId}}&secret={{hostSecret}}"
+          }
+        },
+        {
+          "name": "Player 1 Snapshot (Auth) - See Role",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot?playerId={{player1Id}}&secret={{player1Secret}}"
+          }
+        },
+        {
+          "name": "Player 2 Snapshot (Auth) - See Role",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot?playerId={{player2Id}}&secret={{player2Secret}}"
+          }
+        },
+        {
+          "name": "Player 3 Snapshot (Auth) - See Role",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot?playerId={{player3Id}}&secret={{player3Secret}}"
+          }
+        },
+        {
+          "name": "Player 1 Ack Role",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"ACK_ROLE\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Host Start Night",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"START_NIGHT\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Night Actions (Examples)",
+      "item": [
+        {
+          "name": "Night Action (Seer View Player)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"NIGHT_ACTION\",\n    \"payload\": {\n      \"kind\": \"seerViewPlayer\",\n      \"targetPlayerId\": \"{{hostPlayerId}}\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Night Action (Robber Swap)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player2Id}}\",\n  \"secret\": \"{{player2Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"NIGHT_ACTION\",\n    \"payload\": {\n      \"kind\": \"robberSwap\",\n      \"targetPlayerId\": \"{{player3Id}}\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Night Action (Drunk Swap Center-1)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player3Id}}\",\n  \"secret\": \"{{player3Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"NIGHT_ACTION\",\n    \"payload\": {\n      \"kind\": \"drunkSwap\",\n      \"centerIndex\": 1\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Host Advance Night Step",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"ADVANCE_NIGHT_STEP\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Tokens",
+      "item": [
+        {
+          "name": "Place Token (Role=werewolf on Player 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"PLACE_TOKEN\",\n    \"payload\": {\n      \"targetId\": \"{{player2Id}}\",\n      \"role\": \"werewolf\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Remove Token (Player 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"REMOVE_TOKEN\",\n    \"payload\": {\n      \"targetId\": \"{{player2Id}}\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Clear Tokens (Player 1)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"CLEAR_TOKENS\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Discussion & Voting",
+      "item": [
+        {
+          "name": "Host Start Voting",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"START_VOTING\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player 1 Submit Vote",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{player1Id}}\",\n  \"secret\": \"{{player1Secret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"SUBMIT_VOTE\",\n    \"payload\": {\n      \"targetPlayerId\": \"{{hostPlayerId}}\"\n    }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Host Lock Votes",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"LOCK_VOTES\",\n    \"payload\": { \"locked\": true }\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Host Reveal Results",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"REVEAL_RESULTS\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 - Cleanup",
+      "item": [
+        {
+          "name": "Host Reset Game",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/games/{{gameId}}/commands",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{hostPlayerId}}\",\n  \"secret\": \"{{hostSecret}}\",\n  \"lastKnownVersion\": {{lastVersion}},\n  \"command\": {\n    \"type\": \"RESET_GAME\"\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('lastVersion', json.appliedVersion.toString());"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 - Diagnostics",
+      "item": [
+        {
+          "name": "Snapshot (Public)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot"
+          }
+        },
+        {
+          "name": "Snapshot (Host Auth)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/snapshot?playerId={{hostPlayerId}}&secret={{hostSecret}}"
+          }
+        },
+        {
+          "name": "Events Since",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/games/{{gameId}}/events?since={{lastVersion}}"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-// Shared types and constants for the One-Night social deduction game
+// Shared types for the One-Night social deduction game (rewrite baseline)
 
 export type Phase =
   | "lobby"
@@ -15,19 +15,24 @@ export type Role =
   | "werewolf"
   | "minion"
   | "mason"
+  | "doppleganger"
   | "seer"
   | "robber"
+  | "drunk"
   | "troublemaker"
-  | "insomniac";
+  | "insomniac"
+  | "tanner";
 
 export type CenterIndex = 0 | 1 | 2;
 
 export const NIGHT_ORDER: Role[] = [
+  "doppleganger",
   "werewolf",
   "minion",
   "mason",
   "seer",
   "robber",
+  "drunk",
   "troublemaker",
   "insomniac",
 ];
@@ -36,11 +41,7 @@ export type Player = {
   playerId: string;
   name: string;
   connected: boolean;
-  socketId?: string;
   ready: boolean;
-  resumeSecret: string;
-  ackedRole?: boolean;
-  voteTargetPlayerId?: string | null;
 };
 
 export type GameSettings = {
@@ -49,20 +50,8 @@ export type GameSettings = {
   anonymousVotes: boolean;
   showActionLogOnReveal: boolean;
   tokensEnabled: boolean;
-  tokensPerPlayerLimit: number;
   autoAdvanceNight: boolean;
   parallelNight: boolean;
-};
-
-export const DEFAULT_GAME_SETTINGS: GameSettings = {
-  discussionSeconds: 300,
-  allowVoteChanges: true,
-  anonymousVotes: true,
-  showActionLogOnReveal: false,
-  tokensEnabled: true,
-  tokensPerPlayerLimit: 3,
-  autoAdvanceNight: true,
-  parallelNight: false,
 };
 
 export type RoleSelection = {
@@ -74,28 +63,21 @@ export type TokensState = {
   tokensByPlayer: Record<string, Record<string, number>>;
   // suspectRolesByPlayer[ownerId][targetId] = role label
   suspectRolesByPlayer: Record<string, Record<string, Role>>;
+  // tokenPoolByRole[role] = count
+  tokenPoolByRole: Record<Role, number>;
 };
-
-export const createEmptyTokensState = (): TokensState => ({
-  tokensByPlayer: {},
-  suspectRolesByPlayer: {},
-});
 
 export type VotingState = {
   locked: boolean;
   votesByPlayer: Record<string, string | null>;
 };
 
-export const createEmptyVotingState = (): VotingState => ({
-  locked: false,
-  votesByPlayer: {},
-});
-
 export type DealState = {
   ackByPlayer: Record<string, boolean>;
 };
 
 export type NightActionLogEntry =
+  | { kind: "dopplegangerCopiedRole"; playerId: string; role: Role }
   | { kind: "minionSawWerewolves"; playerId: string; saw: string[] }
   | { kind: "werewolfSawWerewolves"; playerId: string; saw: string[] }
   | { kind: "werewolfSoloPeek"; playerId: string; centerIndex: CenterIndex; role: Role }
@@ -103,6 +85,7 @@ export type NightActionLogEntry =
   | { kind: "seerViewPlayer"; playerId: string; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; playerId: string; center: Array<{ centerIndex: CenterIndex; role: Role }> }
   | { kind: "robberSwap"; playerId: string; targetPlayerId: string; newRole: Role }
+  | { kind: "drunkSwap"; playerId: string; centerIndex: CenterIndex }
   | { kind: "troublemakerSwap"; playerId: string; targets: [string, string] }
   | { kind: "insomniacPeek"; playerId: string; finalRole: Role };
 
@@ -122,7 +105,7 @@ export type RolesState = {
   centerRoles: [Role, Role, Role];
 };
 
-export type Winners = "village" | "werewolves";
+export type Winners = "village" | "werewolves" | "tanner";
 
 export type RevealState = {
   tally: Record<string, number>;
@@ -157,6 +140,7 @@ export type GameState = {
 export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: Role }
+  | { kind: "dopplegangerCopiedRole"; role: Role }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
@@ -165,111 +149,210 @@ export type PrivateView =
   | { kind: "seerViewPlayer"; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: CenterIndex; role: Role }> }
   | { kind: "robberNewRole"; role: Role }
+  | { kind: "drunkSwapped"; centerIndex: CenterIndex }
   | { kind: "insomniacFinalRole"; role: Role };
 
-export const now = (): number => Date.now();
+// Public state for UI consumption
 
-// Utility helpers shared by server and client
-
-export const shuffle = <T>(items: T[]): T[] => {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
+export type PublicPlayer = {
+  playerId: string;
+  name: string;
+  connected: boolean;
+  ready: boolean;
+  hasVoted?: boolean;
 };
 
-export const getPlayers = (state: GameState): Player[] =>
-  state.playerOrder.map((id) => state.playersById[id]).filter(Boolean);
-
-export const getPlayer = (state: GameState, playerId: string): Player | undefined =>
-  state.playersById[playerId];
-
-export const isHost = (state: GameState, playerId: string): boolean =>
-  state.hostPlayerId === playerId;
-
-export const isPhase = (state: GameState, phase: Phase): boolean => state.phase === phase;
-
-export const getOriginalRole = (state: GameState, playerId: string): Role | undefined =>
-  state.roles?.originalRolesByPlayer[playerId];
-
-export const getCurrentRole = (state: GameState, playerId: string): Role | undefined =>
-  state.roles?.currentRolesByPlayer[playerId];
-
-export const eligiblePlayersForNightRole = (state: GameState, role: Role): string[] => {
-  if (!state.roles) return [];
-  return Object.entries(state.roles.originalRolesByPlayer)
-    .filter(([, originalRole]) => originalRole === role)
-    .map(([playerId]) => playerId);
+export type PublicNightState = {
+  stepRole: Role | null;
+  completedThisStep: Record<string, boolean>;
+  stepIndex: number;
+  totalSteps: number;
+  endsAt?: number;
+  mode?: "sequential" | "parallel";
 };
 
-export const isPlayerAloneWerewolf = (state: GameState, playerId: string): boolean => {
-  if (!state.roles) return false;
-  const allWerewolves = eligiblePlayersForNightRole(state, "werewolf");
-  return allWerewolves.length === 1 && allWerewolves[0] === playerId;
+export type PublicTokensState = {
+  tokensByPlayer: Record<string, Record<string, number>>;
+  suspectRolesByPlayer: Record<string, Record<string, Role>>;
 };
 
-export const applyRobberSwap = (
-  state: GameState,
-  robberId: string,
-  targetId: string
-): Role | undefined => {
-  const roles = state.roles;
-  if (!roles) return undefined;
-  const targetRole = roles.currentRolesByPlayer[targetId];
-  const robberRole = roles.currentRolesByPlayer[robberId];
-  roles.currentRolesByPlayer[targetId] = robberRole;
-  roles.currentRolesByPlayer[robberId] = targetRole;
-  return targetRole;
+export type PublicVotingState = {
+  locked: boolean;
+  tally?: Record<string, number>;
 };
 
-export const applyTroublemakerSwap = (
-  state: GameState,
-  firstId: string,
-  secondId: string
-): void => {
-  const roles = state.roles;
-  if (!roles) return;
-  const aRole = roles.currentRolesByPlayer[firstId];
-  roles.currentRolesByPlayer[firstId] = roles.currentRolesByPlayer[secondId];
-  roles.currentRolesByPlayer[secondId] = aRole;
+export type PublicRevealState = {
+  eliminatedPlayerIds: string[];
+  winners?: Winners;
+  finalRoles?: Record<string, Role>;
+  centerRoles?: Role[];
 };
 
-export const computeVoteTally = (state: GameState): Record<string, number> => {
-  const tally: Record<string, number> = {};
-  const votes = state.voting?.votesByPlayer ?? {};
-  Object.values(votes).forEach((target) => {
-    if (!target) return;
-    tally[target] = (tally[target] ?? 0) + 1;
-  });
-  return tally;
+export type PublicGameState = {
+  phase: Phase;
+  phaseEndsAt?: number;
+  gameName?: string;
+  maxPlayers: number;
+  hostPlayerId: string;
+  players: PublicPlayer[];
+  roleSelection: Role[];
+  settings: GameSettings;
+  tokenPoolByRole?: Record<Role, number>;
+  dealAcks?: Record<string, boolean>;
+  night?: PublicNightState;
+  tokens?: PublicTokensState;
+  voting?: PublicVotingState;
+  reveal?: PublicRevealState;
 };
 
-export const computeEliminations = (tally: Record<string, number>): string[] => {
-  let topVotes = 0;
-  Object.values(tally).forEach((votes) => {
-    if (votes > topVotes) topVotes = votes;
-  });
-  if (topVotes === 0) return [];
-  return Object.entries(tally)
-    .filter(([, votes]) => votes === topVotes)
-    .map(([playerId]) => playerId);
+// API DTOs
+
+export type CreateGameResponse = {
+  gameId: string;
+  host: { playerId: string; name: string; secret: string };
+  version: number;
 };
 
-export const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): Winners => {
-  const roles = state.roles?.currentRolesByPlayer ?? {};
-  const werewolves = Object.entries(roles)
-    .filter(([, role]) => role === "werewolf")
-    .map(([id]) => id);
+export type JoinGameResponse = {
+  playerId: string;
+  name: string;
+  secret: string;
+  version: number;
+};
 
-  if (eliminatedPlayerIds.some((id) => roles[id] === "werewolf")) {
-    return "village";
-  }
+export type SnapshotResponse = {
+  version: number;
+  state: PublicGameState;
+  private?: PrivateView;
+};
 
-  if (werewolves.length === 0) {
-    return "village";
-  }
+export type Event = {
+  version: number;
+  type: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
 
-  return "werewolves";
+export type EventBatch = {
+  fromVersion: number;
+  toVersion: number;
+  events: Event[];
+};
+
+export type CommandEnvelope = {
+  playerId: string;
+  secret: string;
+  lastKnownVersion: number;
+  command: Command;
+};
+
+export type CommandBase = {
+  type: string;
+  payload?: Record<string, unknown>;
+};
+
+export type SetReadyCommand = {
+  type: "SET_READY";
+  payload: { ready: boolean };
+};
+
+export type UpdateSettingsCommand = {
+  type: "UPDATE_SETTINGS";
+  payload: { settings: GameSettings };
+};
+
+export type UpdateRolesCommand = {
+  type: "UPDATE_ROLES";
+  payload: { roles: Role[] };
+};
+
+export type StartGameCommand = { type: "START_GAME" };
+export type AckRoleCommand = { type: "ACK_ROLE" };
+export type StartNightCommand = { type: "START_NIGHT" };
+export type AdvanceNightStepCommand = { type: "ADVANCE_NIGHT_STEP" };
+
+export type NightActionDone = { kind: "done" };
+export type DopplegangerCopy = { kind: "dopplegangerCopy"; targetPlayerId: string };
+export type WerewolfSoloPeek = { kind: "werewolfSoloPeek"; centerIndex: CenterIndex };
+export type SeerViewPlayer = { kind: "seerViewPlayer"; targetPlayerId: string };
+export type SeerViewCenter = { kind: "seerViewCenter"; centerIndices: [CenterIndex, CenterIndex] };
+export type RobberSwap = { kind: "robberSwap"; targetPlayerId: string };
+export type DrunkSwap = { kind: "drunkSwap"; centerIndex: CenterIndex };
+export type TroublemakerSwap = { kind: "troublemakerSwap"; targetPlayerIds: [string, string] };
+export type InsomniacPeekFinal = { kind: "insomniacPeek" };
+
+export type NightActionPayload =
+  | NightActionDone
+  | DopplegangerCopy
+  | WerewolfSoloPeek
+  | SeerViewPlayer
+  | SeerViewCenter
+  | RobberSwap
+  | DrunkSwap
+  | TroublemakerSwap
+  | InsomniacPeekFinal;
+
+export type NightActionCommand = {
+  type: "NIGHT_ACTION";
+  payload: NightActionPayload;
+};
+
+export type PlaceTokenCommand = {
+  type: "PLACE_TOKEN";
+  payload: { targetId: string; role?: Role };
+};
+
+export type RemoveTokenCommand = {
+  type: "REMOVE_TOKEN";
+  payload: { targetId: string };
+};
+
+export type ClearTokensCommand = { type: "CLEAR_TOKENS" };
+export type StartVotingCommand = { type: "START_VOTING" };
+
+export type SubmitVoteCommand = {
+  type: "SUBMIT_VOTE";
+  payload: { targetPlayerId: string };
+};
+
+export type LockVotesCommand = {
+  type: "LOCK_VOTES";
+  payload: { locked: boolean };
+};
+
+export type RevealResultsCommand = { type: "REVEAL_RESULTS" };
+export type ResetGameCommand = { type: "RESET_GAME" };
+
+export type Command =
+  | SetReadyCommand
+  | UpdateSettingsCommand
+  | UpdateRolesCommand
+  | StartGameCommand
+  | AckRoleCommand
+  | StartNightCommand
+  | AdvanceNightStepCommand
+  | NightActionCommand
+  | PlaceTokenCommand
+  | RemoveTokenCommand
+  | ClearTokensCommand
+  | StartVotingCommand
+  | SubmitVoteCommand
+  | LockVotesCommand
+  | RevealResultsCommand
+  | ResetGameCommand;
+
+export type CommandResponse = {
+  accepted: boolean;
+  appliedVersion: number;
+  events: Event[];
+};
+
+export type ErrorResponse = {
+  error: string;
+  message: string;
+};
+
+export type VersionMismatchResponse = ErrorResponse & {
+  serverVersion: number;
+  replayFromVersion: number;
 };
