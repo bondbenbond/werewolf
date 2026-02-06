@@ -30,6 +30,7 @@ export const GameBoardScreen = forwardRef<
     initialRoleModal?: boolean;
     showHostBar?: boolean;
     cardTokenById?: Record<string, string | null | undefined>;
+    cardVoteCountById?: Record<string, number | undefined>;
     cardMenuForId?: string | null;
     cardMenuItems?: string[];
     cardMenuPosition?: { placement: "top" | "bottom"; align: "left" | "center" | "right" };
@@ -43,6 +44,7 @@ export const GameBoardScreen = forwardRef<
     initialRoleModal = true,
     showHostBar = true,
     cardTokenById,
+    cardVoteCountById,
     cardMenuForId,
     cardMenuItems,
     cardMenuPosition,
@@ -158,7 +160,7 @@ export const GameBoardScreen = forwardRef<
                     <div
                       className={`card ${onCardClick ? "card-clickable" : ""} ${
                         cardTokenById?.[card.id] ? "card-tokened" : ""
-                      }`}
+                      } ${cardVoteCountById?.[card.id] ? "card-voted" : ""}`}
                       onClick={(event) => {
                         const rect = event.currentTarget.getBoundingClientRect();
                         onCardClick?.(card.id, rect);
@@ -176,6 +178,11 @@ export const GameBoardScreen = forwardRef<
                           src={tokenImageFor(cardTokenById[card.id]) ?? ""}
                           alt=""
                         />
+                      ) : null}
+                      {cardVoteCountById?.[card.id] ? (
+                        <div className="card-vote-count" aria-live="polite">
+                          {cardVoteCountById[card.id]}
+                        </div>
                       ) : null}
                     </div>
                     <span className="card-name center-name" aria-hidden="true" />
@@ -209,7 +216,7 @@ export const GameBoardScreen = forwardRef<
                     <div
                       className={`card ${onCardClick ? "card-clickable" : ""} ${
                         cardTokenById?.[card.id] ? "card-tokened" : ""
-                      }`}
+                      } ${cardVoteCountById?.[card.id] ? "card-voted" : ""}`}
                       onClick={(event) => {
                         const rect = event.currentTarget.getBoundingClientRect();
                         onCardClick?.(card.id, rect);
@@ -227,6 +234,11 @@ export const GameBoardScreen = forwardRef<
                           src={tokenImageFor(cardTokenById[card.id]) ?? ""}
                           alt=""
                         />
+                      ) : null}
+                      {cardVoteCountById?.[card.id] ? (
+                        <div className="card-vote-count" aria-live="polite">
+                          {cardVoteCountById[card.id]}
+                        </div>
                       ) : null}
                     </div>
                     <span className="card-name">

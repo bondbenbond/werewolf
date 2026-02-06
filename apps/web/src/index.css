@@ -2551,11 +2551,13 @@ input[type="number"] {
   cursor: pointer;
 }
 
-.card-tokened .card-face {
+.card-tokened .card-face,
+.card-voted .card-face {
   filter: brightness(0.6) saturate(0.9);
 }
 
-.card-tokened .card-face::after {
+.card-tokened .card-face::after,
+.card-voted .card-face::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -2576,6 +2578,25 @@ input[type="number"] {
   box-shadow: 0 8px 18px rgba(2, 6, 23, 0.45);
   border: 1px solid rgba(226, 232, 240, 0.2);
   object-fit: cover;
+  z-index: 2;
+}
+
+.card-vote-count {
+  position: absolute;
+  right: 50%;
+  bottom: 20%;
+  transform: translate(50%, 50%);
+  width: clamp(26px, 7vw, 34px);
+  height: clamp(26px, 7vw, 34px);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(226, 232, 240, 0.65);
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  text-shadow: 0 2px 6px rgba(2, 6, 23, 0.6);
   z-index: 2;
 }
 

@@ -27,6 +27,8 @@ export function GameScreen({ data, isHost }: { data: GameScreenData; isHost?: bo
   const [nightActionStarted, setNightActionStarted] = useState(false);
   const [discussionMenuCardId, setDiscussionMenuCardId] = useState<string | null>(null);
   const [discussionTokens, setDiscussionTokens] = useState<Record<string, string | null>>({});
+  const [voteCounts, setVoteCounts] = useState<Record<string, number>>({});
+  const [votingReady, setVotingReady] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{
     placement: "top" | "bottom";
     align: "left" | "center" | "right";
@@ -62,6 +64,24 @@ export function GameScreen({ data, isHost }: { data: GameScreenData; isHost?: bo
     }
   }, [data.phase]);
 
+  useEffect(() => {
+    if (data.phase !== "voting") {
+      setVoteCounts({});
+      setVotingReady(false);
+    }
+  }, [data.phase]);
+
+  useEffect(() => {
+    if (data.phase !== "voting") {
+      return undefined;
+    }
+    setVotingReady(false);
+    const timeout = window.setTimeout(() => {
+      setVotingReady(true);
+    }, 5000);
+    return () => window.clearTimeout(timeout);
+  }, [data.phase]);
+
   return (
     <div className="game-shell">
       <GameBoardScreen
@@ -73,6 +93,7 @@ export function GameScreen({ data, isHost }: { data: GameScreenData; isHost?: bo
         initialRoleModal={data.phase === "deal"}
         showHostBar={false}
         cardTokenById={data.phase === "discussion" ? discussionTokens : undefined}
+        cardVoteCountById={data.phase === "voting" ? voteCounts : undefined}
         cardMenuForId={data.phase === "discussion" ? discussionMenuCardId : null}
         cardMenuItems={data.phase === "discussion" ? discussionRoles : undefined}
         cardMenuPosition={menuPosition ?? undefined}
@@ -89,7 +110,18 @@ export function GameScreen({ data, isHost }: { data: GameScreenData; isHost?: bo
                 });
                 setDiscussionMenuCardId(cardId);
               }
-            : undefined
+            : data.phase === "voting" && votingReady
+              ? (cardId, _rect) => {
+                  const cardType = data.board.cards.find((card) => card.id === cardId)?.type;
+                  if (cardType !== "player") {
+                    return;
+                  }
+                  setVoteCounts((prev) => ({
+                    ...prev,
+                    [cardId]: (prev[cardId] ?? 0) + 1,
+                  }));
+                }
+              : undefined
         }
         onCardMenuSelect={
           data.phase === "discussion"
@@ -147,13 +179,19 @@ export function GameScreen({ data, isHost }: { data: GameScreenData; isHost?: bo
       ) : null}
 
       {data.phase === "voting" ? (
-        <div className="overlay">
-          <div className="overlay-card action-card">
-            <p className="eyebrow">Voting</p>
-            <h3>Cast your vote</h3>
-            <p className="lede">Time remaining: {data.voting.timer}</p>
+        votingReady ? (
+          <div className="action-banner">
+            <span>Tap a player to vote · {data.voting.timer} left</span>
           </div>
-        </div>
+        ) : (
+          <div className="overlay">
+            <div className="overlay-card action-card">
+              <p className="eyebrow">Voting</p>
+              <h3>Cast your vote</h3>
+              <p className="lede">Starting in 5 seconds…</p>
+            </div>
+          </div>
+        )
       ) : null}
 
       {data.phase === "reveal" ? (
