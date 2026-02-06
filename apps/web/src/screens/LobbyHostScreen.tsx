@@ -5,7 +5,7 @@ type LobbyData = {
   roomCode: string;
   gameName?: string;
   shareUrl: string;
-  players: Array<{ name: string; connected: boolean; ready: boolean }>;
+  players: Array<{ name: string; connected: boolean; ready: boolean; host?: boolean }>;
   roles: Array<{ name: string; count: number }>;
   settings: {
     autoAdvance: boolean;
@@ -14,6 +14,8 @@ type LobbyData = {
     discussionSeconds: number;
     votingSeconds: number;
   };
+  startCountdownSeconds?: number | null;
+  showCountdownOverlay?: boolean;
 };
 
 export function LobbyHostScreen({ data }: { data: LobbyData }) {
@@ -21,6 +23,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [savedSettings, setSavedSettings] = useState(data.settings);
   const [settings, setSettings] = useState(data.settings);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
   const [roleCounts, setRoleCounts] = useState<Record<string, number>>(
     Object.fromEntries(data.roles.map((role) => [role.name, role.count]))
   );
@@ -49,8 +52,18 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
   };
   const roleTotal = data.roles.reduce((sum, role) => sum + (roleCounts[role.name] ?? 0), 0);
   const rolesRequired = data.players.length + 3;
+  const rolesComplete = roleTotal === rolesRequired;
   const roleTimerOptions = [5, 10, 15, 20, 25, 30];
   const discussionMinuteOptions = [2, 3, 4, 5, 6, 8, 10, 12, 15];
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard?.writeText(data.shareUrl);
+      setCopyStatus("copied");
+      window.setTimeout(() => setCopyStatus("idle"), 1400);
+    } catch {
+      setCopyStatus("idle");
+    }
+  };
   const settingsDirty =
     settings.autoAdvance !== savedSettings.autoAdvance ||
     settings.parallelNight !== savedSettings.parallelNight ||
@@ -85,13 +98,19 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
           <p className="lede">Pick the deck and start when everyone is ready.</p>
         </div>
         <div className="lobby-actions">
-          <button className="room-copy" type="button">
-            Copy link
+          <button className="room-copy" type="button" onClick={copyLink}>
+            {copyStatus === "copied" ? "Copied!" : "Copy link"}
           </button>
           <button className="settings-button" type="button" onClick={openSettings}>
             Game settings
           </button>
         </div>
+      </div>
+
+      <div className="settings-summary">
+        <span>Role timer: {savedSettings.nightStepSeconds}s</span>
+        <span>Discussion: {Math.round(savedSettings.discussionSeconds / 60)}m</span>
+        <span>Vote: {savedSettings.votingSeconds}s</span>
       </div>
 
       <div className="lobby-grid">
@@ -100,7 +119,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
             <h3>Roles</h3>
             <div className="summary-row">
               <span className="summary-pill">Players: {data.players.length}</span>
-              <span className="summary-pill">
+              <span className={`summary-pill ${rolesComplete ? "complete" : ""}`}>
                 Roles: {roleTotal}/{rolesRequired}
               </span>
             </div>
@@ -138,14 +157,22 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
             {data.players.map((player) => (
               <div key={player.name} className="player-row">
                 <div>
-                  <strong>{player.name}</strong>
+                  <strong>
+                    {player.name}
+                    {player.host ? <span className="host-badge">Host</span> : null}
+                  </strong>
                   <div className="micro">
-                    {player.connected ? "Online" : "Offline"} · {player.ready ? "Ready" : "Not ready"}
+                    {player.connected ? "Online" : "Offline"} ·{" "}
+                    <span className={`ready-status ${player.ready ? "ready" : "waiting"}`}>
+                      {player.ready ? "Ready" : "Not ready"}
+                    </span>
                   </div>
                 </div>
-                <span className={`status-pill ${player.ready ? "ready" : "waiting"}`}>
-                  {player.ready ? "Ready" : "Waiting"}
-                </span>
+                <div className="player-actions">
+                  <button className="kick-button" type="button">
+                    Kick
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -153,9 +180,21 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
       </div>
 
       <div className="cta-row">
-        <Button>Start game</Button>
+        <Button variant="success" disabled={!rolesComplete}>
+          Start game
+        </Button>
         <Button variant="ghost">End game</Button>
       </div>
+
+      {typeof data.startCountdownSeconds === "number" && data.showCountdownOverlay !== false ? (
+        <div className="overlay">
+          <div className="overlay-card countdown-card">
+            <p className="eyebrow">Game starting</p>
+            <h3>Host started the game</h3>
+            <p className="lede">Starting in {data.startCountdownSeconds}s</p>
+          </div>
+        </div>
+      ) : null}
 
       {settingsOpen ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={closeSettings}>
@@ -182,7 +221,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                       ?
                     </button>
                     {activeHelp === "autoAdvance" ? (
-                      <span className="help-bubble">
+                      <span className="help-bubble help-bubble-below">
                         Moves to the next night role automatically when the timer ends.
                       </span>
                     ) : null}
@@ -210,7 +249,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                       ?
                     </button>
                     {activeHelp === "parallelNight" ? (
-                      <span className="help-bubble">
+                      <span className="help-bubble help-bubble-below">
                         All night roles act at the same time. Players see results after the timer.
                       </span>
                     ) : null}
@@ -237,7 +276,9 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                         ?
                       </button>
                       {activeHelp === "roleTimer" ? (
-                        <span className="help-bubble">Time allowed for each role to act during night.</span>
+                        <span className="help-bubble help-bubble-above">
+                          Time allowed for each role to act during night.
+                        </span>
                       ) : null}
                     </span>
                   </span>
@@ -270,7 +311,9 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                         ?
                       </button>
                       {activeHelp === "discussionTimer" ? (
-                        <span className="help-bubble">Length of open discussion before voting.</span>
+                        <span className="help-bubble help-bubble-above">
+                          Length of open discussion before voting.
+                        </span>
                       ) : null}
                     </span>
                   </span>
@@ -301,7 +344,9 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                         ?
                       </button>
                       {activeHelp === "votingTimer" ? (
-                        <span className="help-bubble">How long players have to submit votes.</span>
+                        <span className="help-bubble help-bubble-above">
+                          How long players have to submit votes.
+                        </span>
                       ) : null}
                     </span>
                   </span>

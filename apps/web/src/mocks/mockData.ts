@@ -4,17 +4,17 @@ export const mockData = {
     gameName: "",
     shareUrl: "https://play.werewolf/game?room=ABCD",
     roles: [
-      { name: "Werewolf", count: 2 },
-      { name: "Minion", count: 1 },
-      { name: "Mason", count: 2 },
-      { name: "Seer", count: 1 },
-      { name: "Robber", count: 1 },
-      { name: "Troublemaker", count: 1 },
+      { name: "Werewolf", count: 0 },
+      { name: "Minion", count: 0 },
+      { name: "Mason", count: 0 },
+      { name: "Seer", count: 0 },
+      { name: "Robber", count: 0 },
+      { name: "Troublemaker", count: 0 },
       { name: "Drunk", count: 0 },
-      { name: "Insomniac", count: 1 },
+      { name: "Insomniac", count: 0 },
       { name: "Doppleganger", count: 0 },
       { name: "Tanner", count: 0 },
-      { name: "Villager", count: 2 },
+      { name: "Villager", count: 0 },
     ],
     settings: {
       autoAdvance: true,
@@ -24,11 +24,12 @@ export const mockData = {
       votingSeconds: 10,
     },
     players: [
-      { name: "Host", connected: true, ready: true },
+      { name: "Host", connected: true, ready: true, host: true },
       { name: "Player 1", connected: true, ready: false },
       { name: "Player 2", connected: true, ready: true },
       { name: "Player 3", connected: false, ready: false },
     ],
+    startCountdownSeconds: 10,
   },
   night: {
     step: "Seer",
@@ -57,9 +58,22 @@ export const mockData = {
   },
   board: {
     title: "Game Board",
-    cards: Array.from({ length: 12 }, (_, idx) => ({
-      id: `card-${idx + 1}`,
-      label: `Card ${idx + 1}`,
-    })),
+    phase: "Deal",
+    phaseSecondsRemaining: 10,
+    phaseSecondsTotal: 10,
+    playerName: "Ben",
+    role: {
+      name: "Robber",
+      description: "Keep it secret. Tap acknowledge once you've seen it.",
+    },
+    cards: Array.from({ length: 12 }, (_, idx) => {
+      const isCenter = idx < 3;
+      const playerIndex = idx - 2;
+      return {
+        id: `card-${idx + 1}`,
+        label: isCenter ? `Center ${idx + 1}` : playerIndex === 1 ? "Ben" : `Player ${playerIndex}`,
+        type: isCenter ? "center" : "player",
+      };
+    }),
   },
 };

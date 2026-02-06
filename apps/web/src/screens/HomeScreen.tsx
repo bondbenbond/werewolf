@@ -1,10 +1,13 @@
 import { useRef, useState } from "react";
 
 export function HomeScreen() {
+  const [playerName, setPlayerName] = useState("");
+  const [nameError, setNameError] = useState(false);
   const [pin, setPin] = useState<string[]>(Array.from({ length: 6 }, () => ""));
   const [modal, setModal] = useState<"how" | "rules" | null>(null);
   const closeModal = () => setModal(null);
   const pinRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const nameRef = useRef<HTMLInputElement | null>(null);
   const setPinDigit = (index: number, value: string) => {
     const next = [...pin];
     next[index] = value;
@@ -49,6 +52,15 @@ export function HomeScreen() {
     pinRefs.current[0]?.focus();
   };
 
+  const requireName = () => {
+    if (!playerName.trim()) {
+      setNameError(true);
+      nameRef.current?.focus();
+      return false;
+    }
+    return true;
+  };
+
   return (
     <div className="home-wrap">
       <div className="home-header">
@@ -60,8 +72,25 @@ export function HomeScreen() {
       <div className="home-global-inputs">
         <div className="field">
           <label htmlFor="player-name">Your name</label>
-          <input id="player-name" className="input" placeholder="Enter your name" />
-          <p className="micro">This is the name other players will see.</p>
+          <input
+            id="player-name"
+            ref={nameRef}
+            className={`input ${nameError ? "input-error" : ""}`}
+            placeholder="Enter your name"
+            value={playerName}
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => {
+              setPlayerName(event.target.value);
+              if (event.target.value.trim()) {
+                setNameError(false);
+              }
+            }}
+          />
+          {nameError ? (
+            <p className="micro error-text" role="alert">
+              Name is required to continue.
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -70,11 +99,17 @@ export function HomeScreen() {
           className="home-card primary"
           role="button"
           tabIndex={0}
-          onClick={focusFirstPin}
+          onClick={() => {
+            if (requireName()) {
+              focusFirstPin();
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
-              focusFirstPin();
+              if (requireName()) {
+                focusFirstPin();
+              }
             }
           }}
         >
@@ -100,7 +135,20 @@ export function HomeScreen() {
           </div>
         </div>
 
-        <div className="home-card secondary" role="button" tabIndex={0}>
+        <div
+          className="home-card secondary"
+          role="button"
+          tabIndex={0}
+          onClick={() => {
+            requireName();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              requireName();
+            }
+          }}
+        >
           <h3>Create a game</h3>
           <p className="micro">Host a room and choose roles before players join.</p>
         </div>
