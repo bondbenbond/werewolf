@@ -3,8 +3,6 @@ version: "3.9"
 services:
   web:
     image: ghcr.io/bondbenbond/werewolf-web:${WEB_TAG}
-    environment:
-      SERVER_URL: ${SERVER_URL}
     networks:
       - caddy-net
     expose:

@@ -80,9 +80,43 @@ const shuffle = <T>(items: T[]): T[] => {
   return copy;
 };
 
-const sendSse = (res: NodeJS.WritableStream, event: string, data: unknown) => {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
+const canWriteSse = (res: NodeJS.WritableStream) => {
+  const stream = res as NodeJS.WritableStream & {
+    destroyed?: boolean;
+    writableEnded?: boolean;
+    writableDestroyed?: boolean;
+  };
+  return !stream.destroyed && !stream.writableDestroyed && !stream.writableEnded;
+};
+
+const pruneStream = (record: GameRecord, stream: NodeJS.WritableStream) => {
+  record.streams.delete(stream);
+  record.privateStreams.forEach((set, playerId) => {
+    set.delete(stream);
+    if (set.size === 0) {
+      record.privateStreams.delete(playerId);
+    }
+  });
+};
+
+const sendSseSafe = (
+  record: GameRecord,
+  stream: NodeJS.WritableStream,
+  event: string,
+  data: unknown
+) => {
+  if (!canWriteSse(stream)) {
+    pruneStream(record, stream);
+    return false;
+  }
+  try {
+    stream.write(`event: ${event}\n`);
+    stream.write(`data: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    pruneStream(record, stream);
+    return false;
+  }
 };
 
 const appendEvent = (record: GameRecord, type: string, payload: Record<string, unknown>) => {
@@ -97,8 +131,8 @@ const appendEvent = (record: GameRecord, type: string, payload: Record<string, u
   if (record.events.length > record.historyLimit) {
     record.events.splice(0, record.events.length - record.historyLimit);
   }
-  record.streams.forEach((stream) => {
-    sendSse(stream, "public", event);
+  [...record.streams].forEach((stream) => {
+    sendSseSafe(record, stream, "public", event);
   });
   return event;
 };
@@ -117,8 +151,8 @@ const emitPrivate = (record: GameRecord, playerId: string, type: string, payload
   }
   const streams = record.privateStreams.get(playerId);
   if (streams) {
-    streams.forEach((stream) => {
-      sendSse(stream, "private", event);
+    [...streams].forEach((stream) => {
+      sendSseSafe(record, stream, "private", event);
     });
   }
   return event;
@@ -1111,14 +1145,7 @@ app.post(
         emitPrivate(record, playerId, "ROLE_ASSIGNED", { role });
       }
     });
-    if (record.state.settings.autoAdvanceNight) {
-      clearDealTimer(record);
-      record.dealTimer = setTimeout(() => {
-        if (record.state.phase !== "deal") return;
-        startNightCountdown(record);
-        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, 5_000);
-    }
+    clearDealTimer(record);
   }
 
   if (commandType === "ACK_ROLE") {
@@ -1129,7 +1156,7 @@ app.post(
       record.state.deal.ackByPlayer[body.playerId] = true;
       record.state.updatedAt = Date.now();
     }
-    if (!record.state.settings.autoAdvanceNight && Object.values(record.state.deal.ackByPlayer).every(Boolean)) {
+    if (Object.values(record.state.deal.ackByPlayer).every(Boolean)) {
       record.state.phaseEndsAt = undefined;
     }
   }
@@ -1465,21 +1492,24 @@ app.get(
     record.privateStreams.set(playerId, existing);
   }
 
-  sendSse(reply.raw, "hello", { serverVersion: record.version });
+  sendSseSafe(record, reply.raw, "hello", { serverVersion: record.version });
   const backlog = record.events.filter((event) => event.version > since);
   backlog.forEach((event) => {
     const targetPlayerId = (event.payload as { targetPlayerId?: string }).targetPlayerId;
     if (!targetPlayerId) {
-      sendSse(reply.raw, "public", event);
+      sendSseSafe(record, reply.raw, "public", event);
       return;
     }
     if (playerId && targetPlayerId === playerId) {
-      sendSse(reply.raw, "private", event);
+      sendSseSafe(record, reply.raw, "private", event);
     }
   });
 
   const heartbeat = setInterval(() => {
-    sendSse(reply.raw, "heartbeat", { serverTime: nowIso() });
+    const ok = sendSseSafe(record, reply.raw, "heartbeat", { serverTime: nowIso() });
+    if (!ok) {
+      clearInterval(heartbeat);
+    }
   }, 15000);
 
   request.raw.on("close", () => {

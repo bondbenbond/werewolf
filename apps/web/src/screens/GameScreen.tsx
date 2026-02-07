@@ -251,6 +251,10 @@ export function GameScreen({
     ...nightSelections.players,
     ...nightSelections.centers.map((centerIndex) => `center-${centerIndex}`),
   ];
+  const activeBlinkCardIds =
+    data.phase === "night" && !data.night.waiting && nightActionState !== "confirmed"
+      ? data.night.blinkCardIds
+      : undefined;
 
   const submitNightAction = async (payload: Record<string, unknown>) => {
     if (!onNightAction) return;
@@ -393,20 +397,23 @@ export function GameScreen({
       : phaseRemaining ?? data.board.phaseSecondsRemaining ?? null;
   const autoAdvanceFlow = !!data.settings?.autoAdvance;
   const hostNextAction = useMemo(() => {
-    if (autoAdvanceFlow && (data.phase === "deal" || data.phase === "night" || data.phase === "discussion" || data.phase === "voting")) {
-      if (data.phase === "deal") return { label: "Auto starting night", onClick: undefined, disabled: true };
-      if (data.phase === "night") return { label: "Auto advancing", onClick: undefined, disabled: true };
-      if (data.phase === "discussion") return { label: "Auto starting voting", onClick: undefined, disabled: true };
-      return { label: "Auto revealing", onClick: undefined, disabled: true };
-    }
     if (data.phase === "deal") {
       return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
+    }
+    if (autoAdvanceFlow && data.phase === "night") {
+      return { label: "Auto advancing", onClick: undefined, disabled: true };
     }
     if (data.phase === "night") {
       return { label: "Next role", onClick: onAdvanceNightStep, disabled: !onAdvanceNightStep };
     }
+    if (autoAdvanceFlow && data.phase === "discussion") {
+      return { label: "Start vote early", onClick: onStartVoting, disabled: !onStartVoting };
+    }
     if (data.phase === "discussion") {
       return { label: "Start voting", onClick: onStartVoting, disabled: !onStartVoting };
+    }
+    if (autoAdvanceFlow && data.phase === "voting") {
+      return { label: "Reveal now", onClick: onRevealResults, disabled: !onRevealResults };
     }
     if (data.phase === "voting") {
       return { label: "Reveal results", onClick: onRevealResults, disabled: !onRevealResults };
@@ -450,7 +457,7 @@ export function GameScreen({
         showHostBar={false}
         selectableCardIds={computedSelectable}
         selectedCardIds={selectedCardIds}
-        blinkCardIds={data.night.blinkCardIds}
+        blinkCardIds={activeBlinkCardIds}
         revealedRoleByCardId={revealRolesByCardId ?? data.night.revealedRolesByCardId}
         cardNoteById={data.night.cardAnnotationsByCardId}
         eliminatedCardIds={revealEliminatedIds}
