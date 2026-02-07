@@ -16,6 +16,8 @@ import { sendCommand } from "../api/client";
 const screens = ["Home", "LobbyHost", "LobbyPlayer", "Game"] as const;
 
 export function Playground() {
+  const forceDevMenu = new URL(window.location.href).searchParams.get("dev") === "1";
+  const showDevMenu = forceDevMenu;
   const [screen, setScreen] = useState<(typeof screens)[number]>("Home");
   const [open, setOpen] = useState(false);
   const gameBoardRef = useRef<GameBoardDevHandle>(null);
@@ -105,7 +107,7 @@ export function Playground() {
 
   return (
     <div className="page">
-      <div className="playground-menu">
+      {showDevMenu ? <div className="playground-menu">
         <button
           className="button ghost tiny"
           type="button"
@@ -464,7 +466,7 @@ export function Playground() {
             ) : null}
           </div>
         ) : null}
-      </div>
+      </div> : null}
 
       {resolvedScreen === "Home" && <HomeScreen onSession={handleSession} />}
       {resolvedScreen === "LobbyHost" && (
@@ -498,7 +500,10 @@ export function Playground() {
                         ...base,
                         autoAdvanceNight: settings.autoAdvance,
                         parallelNight: settings.parallelNight,
+                        nightStepSeconds: settings.nightStepSeconds,
+                        parallelResultSeconds: settings.parallelResultSeconds,
                         discussionSeconds: settings.discussionSeconds,
+                        votingSeconds: settings.votingSeconds,
                       },
                     },
                   });

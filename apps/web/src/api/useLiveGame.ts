@@ -23,6 +23,7 @@ export type PublicGameState = {
   roleSelection: string[];
   settings: {
     nightStepSeconds: number;
+    parallelResultSeconds: number;
     discussionSeconds: number;
     votingSeconds: number;
     allowVoteChanges: boolean;
@@ -63,6 +64,7 @@ export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: string }
   | { kind: "dopplegangerCopiedRole"; role: string }
+  | { kind: "dopplegangerActAsRole"; role: string }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
@@ -72,6 +74,7 @@ export type PrivateView =
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: number; role: string }> }
   | { kind: "robberNewRole"; role: string }
   | { kind: "drunkSwapped"; centerIndex: number }
+  | { kind: "troublemakerSwapped"; targetPlayerIds: [string, string] }
   | { kind: "insomniacFinalRole"; role: string };
 
 type LiveGameOptions = {

@@ -540,6 +540,7 @@ select.input {
   display: grid;
   gap: 16px;
   padding-top: 25px;
+  padding-bottom: calc(var(--host-bar-h) + 26px + var(--safe-bottom));
 }
 
 .lobby-header {
@@ -918,6 +919,10 @@ select.input {
 
 .player-ready-cta .button {
   flex: 1;
+}
+
+.lobby-bottom-bar {
+  z-index: 26;
 }
 
 .player-row {

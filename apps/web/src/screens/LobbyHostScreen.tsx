@@ -11,6 +11,7 @@ type LobbyData = {
     autoAdvance: boolean;
     parallelNight: boolean;
     nightStepSeconds: number;
+    parallelResultSeconds: number;
     discussionSeconds: number;
     votingSeconds: number;
   };
@@ -25,6 +26,7 @@ type LobbyHostScreenProps = {
     autoAdvance: boolean;
     parallelNight: boolean;
     nightStepSeconds: number;
+    parallelResultSeconds: number;
     discussionSeconds: number;
     votingSeconds: number;
   }) => void;
@@ -116,6 +118,7 @@ export function LobbyHostScreen({
     settings.autoAdvance !== savedSettings.autoAdvance ||
     settings.parallelNight !== savedSettings.parallelNight ||
     settings.nightStepSeconds !== savedSettings.nightStepSeconds ||
+    settings.parallelResultSeconds !== savedSettings.parallelResultSeconds ||
     settings.discussionSeconds !== savedSettings.discussionSeconds ||
     settings.votingSeconds !== savedSettings.votingSeconds;
   const openSettings = () => {
@@ -158,6 +161,7 @@ export function LobbyHostScreen({
 
       <div className="settings-summary">
         <span>Role timer: {savedSettings.nightStepSeconds}s</span>
+        <span>Night results: {savedSettings.parallelResultSeconds}s</span>
         <span>Discussion: {Math.round(savedSettings.discussionSeconds / 60)}m</span>
         <span>Vote: {savedSettings.votingSeconds}s</span>
       </div>
@@ -237,8 +241,9 @@ export function LobbyHostScreen({
         </section>
       </div>
 
-      <div className="cta-row">
+      <div className="host-bar lobby-bottom-bar">
         <Button
+          size="small"
           variant="success"
           loading={startLoading}
           disabled={!rolesComplete || !onStartGame}
@@ -255,6 +260,7 @@ export function LobbyHostScreen({
           Start game
         </Button>
         <Button
+          size="small"
           variant="ghost"
           loading={endLoading}
           onClick={async () => {
@@ -377,6 +383,41 @@ export function LobbyHostScreen({
                   >
                     {roleTimerOptions.map((value) => (
                       <option key={`role-${value}`} value={value}>
+                        {value} sec
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="settings-field">
+                  <span className="settings-label">
+                    Night results timer
+                    <span className="help-wrap">
+                      <button
+                        className="help-icon"
+                        type="button"
+                        aria-label="Night results timer help"
+                        onClick={() =>
+                          setActiveHelp((prev) => (prev === "parallelResultTimer" ? null : "parallelResultTimer"))
+                        }
+                      >
+                        ?
+                      </button>
+                      {activeHelp === "parallelResultTimer" ? (
+                        <span className="help-bubble help-bubble-above">
+                          How long players can view private results after parallel night resolves.
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
+                  <select
+                    className="settings-select"
+                    value={settings.parallelResultSeconds}
+                    onChange={(event) =>
+                      setSettings((prev) => ({ ...prev, parallelResultSeconds: Number(event.target.value) }))
+                    }
+                  >
+                    {roleTimerOptions.map((value) => (
+                      <option key={`parallel-result-${value}`} value={value}>
                         {value} sec
                       </option>
                     ))}

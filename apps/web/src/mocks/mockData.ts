@@ -20,6 +20,7 @@ export const mockData = {
       autoAdvance: true,
       parallelNight: false,
       nightStepSeconds: 10,
+      parallelResultSeconds: 10,
       discussionSeconds: 300,
       votingSeconds: 10,
     },

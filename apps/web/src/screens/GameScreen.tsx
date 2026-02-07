@@ -2,7 +2,7 @@ import { Button } from "../components/Button";
 import { GameBoardScreen, type GameBoardData } from "./GameBoardScreen";
 import { useEffect, useMemo, useState } from "react";
 
-type Phase = "deal" | "nightCountdown" | "night" | "discussion" | "voting" | "reveal";
+type Phase = "deal" | "nightCountdown" | "night" | "parallelResult" | "discussion" | "voting" | "reveal";
 type ActionState = "idle" | "selecting" | "confirmed";
 
 export type GameScreenData = {
@@ -11,6 +11,7 @@ export type GameScreenData = {
   phaseTimer?: string;
   settings?: {
     autoAdvance?: boolean;
+    parallelNight?: boolean;
   };
   night: {
     step: string;
@@ -26,6 +27,7 @@ export type GameScreenData = {
     blinkCardIds?: string[];
     revealedRolesByCardId?: Record<string, string>;
     cardAnnotationsByCardId?: Record<string, string>;
+    resultLines?: string[];
   };
   discussion: { timer: string; tokenRoleOptions?: Array<{ label: string; value: string }> };
   voting: { timer: string };
@@ -72,6 +74,8 @@ export function GameScreen({
   const phaseLabel =
     data.phase === "nightCountdown"
       ? "Night"
+      : data.phase === "parallelResult"
+      ? "Night Results"
       : data.phase.charAt(0).toUpperCase() + data.phase.slice(1);
   const [dealAcknowledged, setDealAcknowledged] = useState(false);
   const [phaseRemaining, setPhaseRemaining] = useState<number | null>(null);
@@ -200,8 +204,20 @@ export function GameScreen({
   const normalizeRoleKey = (label?: string | null) => (label ? label.toLowerCase() : "");
   const scrollViewportToTop = () => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    if (document.scrollingElement) {
+      document.scrollingElement.scrollTop = 0;
+    }
     if (document.documentElement) document.documentElement.scrollTop = 0;
     if (document.body) document.body.scrollTop = 0;
+  };
+  const forceScrollViewportToTop = () => {
+    scrollViewportToTop();
+    window.requestAnimationFrame(() => {
+      scrollViewportToTop();
+    });
+    window.setTimeout(() => {
+      scrollViewportToTop();
+    }, 0);
   };
 
   const roleKey = normalizeRoleKey(data.night.role);
@@ -244,6 +260,11 @@ export function GameScreen({
     if (roleKey === "werewolf") {
       return data.night.selectableCardIds ?? [];
     }
+    if (roleKey === "doppleganger") {
+      return data.board.cards
+        .filter((card) => card.type === "player" && card.id !== data.board.playerId)
+        .map((card) => card.id);
+    }
     return [];
   }, [data, nightActionPending, nightActionState, nightSelections, roleKey]);
 
@@ -251,8 +272,15 @@ export function GameScreen({
     ...nightSelections.players,
     ...nightSelections.centers.map((centerIndex) => `center-${centerIndex}`),
   ];
+  const isSequentialNight = data.phase === "night" && !data.settings?.parallelNight;
+  const requiresStartToRevealInfo = ["werewolf", "mason", "minion"].includes(roleKey);
+  const hideNightInfoUntilStart =
+    isSequentialNight && requiresStartToRevealInfo && nightActionState === "idle";
   const activeBlinkCardIds =
-    data.phase === "night" && !data.night.waiting && nightActionState !== "confirmed"
+    data.phase === "night" &&
+    !data.night.waiting &&
+    !hideNightInfoUntilStart &&
+    nightActionState !== "confirmed"
       ? data.night.blinkCardIds
       : undefined;
 
@@ -285,6 +313,16 @@ export function GameScreen({
     if (!card) return;
     if (!computedSelectable.includes(cardId)) return;
 
+    if (roleKey === "doppleganger" && card.type === "player") {
+      try {
+        await submitNightAction({ kind: "dopplegangerCopy", targetPlayerId: cardId });
+        setNightSelections({ players: [cardId], centers: [] });
+        markNightActionConfirmed();
+      } catch {
+        // Error is surfaced via nightActionError state.
+      }
+      return;
+    }
     if (roleKey === "werewolf" && card.type === "center") {
       const centerIndex = Number(cardId.replace("center-", ""));
       if (!Number.isNaN(centerIndex)) {
@@ -372,11 +410,16 @@ export function GameScreen({
     data.phase === "night"
       ? phaseRemaining ?? data.night.secondsRemaining ?? data.board.phaseSecondsRemaining ?? null
       : null;
+  const parallelResultCountdown =
+    data.phase === "parallelResult" ? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null : null;
   const werewolfCanSoloPeek =
     roleKey === "werewolf" && (data.night.selectableCardIds?.length ?? 0) > 0;
   const werewolfPartnerKnown = roleKey === "werewolf" && (data.night.blinkCardIds?.length ?? 0) > 0;
   const roleNeedsSelection =
-    ["seer", "robber", "troublemaker", "drunk"].includes(roleKey) || werewolfCanSoloPeek;
+    ["doppleganger", "seer", "robber", "troublemaker", "drunk"].includes(roleKey) || werewolfCanSoloPeek;
+  const roleHasNoSelection =
+    roleKey === "minion" || roleKey === "mason" || (roleKey === "werewolf" && !werewolfCanSoloPeek);
+  const showNoTapHint = roleHasNoSelection && roleKey !== "minion";
   const roleNeedsStartModal =
     roleNeedsSelection ||
     ["werewolf", "insomniac", "minion", "mason"].includes(roleKey);
@@ -389,16 +432,32 @@ export function GameScreen({
     completedNightStepKey !== currentNightStepKey;
   const nextStepLabel = (data.night.nextStep ?? "Discussion").toLowerCase() === "discussion" ? "Next phase" : "Next role";
   const showNightHintBanner = data.phase === "night" && !showNightStartModal && !showNightWaitingModal;
+  const startActionLabel =
+    roleHasNoSelection
+      ? "I understand"
+      : roleKey === "insomniac"
+      ? "Reveal final role"
+      : "Start action";
+  const showParallelResultModal = data.phase === "parallelResult";
   const boardPhaseSecondsRemaining =
     data.phase === "night"
       ? nightCountdown
+      : data.phase === "parallelResult"
+      ? parallelResultCountdown
       : data.phase === "nightCountdown" || data.phase === "deal"
       ? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null
       : phaseRemaining ?? data.board.phaseSecondsRemaining ?? null;
   const autoAdvanceFlow = !!data.settings?.autoAdvance;
+  const parallelNightFlow = !!data.settings?.parallelNight;
   const hostNextAction = useMemo(() => {
     if (data.phase === "deal") {
       return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
+    }
+    if (parallelNightFlow && data.phase === "night") {
+      return { label: "Auto advancing", onClick: undefined, disabled: true };
+    }
+    if (parallelNightFlow && data.phase === "parallelResult") {
+      return { label: "Showing results", onClick: undefined, disabled: true };
     }
     if (autoAdvanceFlow && data.phase === "night") {
       return { label: "Auto advancing", onClick: undefined, disabled: true };
@@ -422,10 +481,17 @@ export function GameScreen({
       return { label: "Back to lobby", onClick: onEndGame, disabled: !onEndGame };
     }
     return { label: "Next", onClick: undefined, disabled: true };
-  }, [autoAdvanceFlow, data.phase, onAdvanceNightStep, onEndGame, onRevealResults, onStartNight, onStartVoting]);
+  }, [autoAdvanceFlow, data.phase, onAdvanceNightStep, onEndGame, onRevealResults, onStartNight, onStartVoting, parallelNightFlow]);
+  const showHostProgressButton = !(
+    (autoAdvanceFlow && data.phase === "night") ||
+    (parallelNightFlow && (data.phase === "night" || data.phase === "parallelResult"))
+  );
   const revealRolesByCardId = revealResultsVisible ? data.reveal.finalRoleByCardId : undefined;
   const revealEliminatedIds = revealResultsVisible ? data.reveal.eliminatedPlayerIds : undefined;
   const revealWinnerIds = revealResultsVisible ? data.reveal.winnerPlayerIds : undefined;
+  const showNightBoardInfo = data.phase === "night";
+  const visibleNightReveals = hideNightInfoUntilStart ? undefined : data.night.revealedRolesByCardId;
+  const visibleNightNotes = hideNightInfoUntilStart ? undefined : data.night.cardAnnotationsByCardId;
 
   useEffect(() => {
     if (data.phase !== "night" || roleKey !== "werewolf" || nightActionState !== "selecting") return;
@@ -435,13 +501,24 @@ export function GameScreen({
   }, [data.phase, roleKey, nightActionState, werewolfCanSoloPeek, werewolfPartnerKnown]);
 
   useEffect(() => {
+    if (data.phase !== "night") return;
+    if ((data.night.step ?? "").toLowerCase() !== "doppleganger") return;
+    if (nightActionState !== "confirmed") return;
+    if (!["seer", "robber", "troublemaker", "drunk"].includes(roleKey)) return;
+    setNightActionState("selecting");
+  }, [data.phase, data.night.step, nightActionState, roleKey]);
+
+  useEffect(() => {
     if (!showRoleModal) return;
-    scrollViewportToTop();
-    const raf = window.requestAnimationFrame(() => {
-      scrollViewportToTop();
-    });
-    return () => window.cancelAnimationFrame(raf);
+    forceScrollViewportToTop();
+    return undefined;
   }, [showRoleModal]);
+
+  useEffect(() => {
+    if (!showNightStartModal && !showNightWaitingModal && !showParallelResultModal) return;
+    forceScrollViewportToTop();
+    return undefined;
+  }, [showNightStartModal, showNightWaitingModal, showParallelResultModal]);
 
   return (
     <div className="game-shell">
@@ -458,8 +535,8 @@ export function GameScreen({
         selectableCardIds={computedSelectable}
         selectedCardIds={selectedCardIds}
         blinkCardIds={activeBlinkCardIds}
-        revealedRoleByCardId={revealRolesByCardId ?? data.night.revealedRolesByCardId}
-        cardNoteById={data.night.cardAnnotationsByCardId}
+        revealedRoleByCardId={revealRolesByCardId ?? (showNightBoardInfo ? visibleNightReveals : undefined)}
+        cardNoteById={showNightBoardInfo ? visibleNightNotes : undefined}
         eliminatedCardIds={revealEliminatedIds}
         winnerCardIds={revealWinnerIds}
         cardTokenById={
@@ -477,10 +554,7 @@ export function GameScreen({
         cardMenuPosition={menuPosition ?? undefined}
         onAcknowledge={() => {
           setDealAcknowledged(true);
-          scrollViewportToTop();
-          window.requestAnimationFrame(() => {
-            scrollViewportToTop();
-          });
+          forceScrollViewportToTop();
           onAckRole?.();
         }}
         onCardClick={
@@ -573,6 +647,9 @@ export function GameScreen({
             <p className="eyebrow">Your action</p>
             <h3>{data.night.role ?? "Role action"}</h3>
             <p className="lede">{data.night.roleInstruction ?? data.night.instruction}</p>
+            {showNoTapHint ? (
+              <p className="lede">No card tap needed. Use this time to memorize what you saw.</p>
+            ) : null}
             <Button
               variant="success"
               loading={nightActionPending}
@@ -601,7 +678,7 @@ export function GameScreen({
                 setNightActionState("selecting");
               }}
             >
-              Start action
+              {startActionLabel}
             </Button>
           </div>
         </div>
@@ -615,6 +692,31 @@ export function GameScreen({
             <p className="lede">Current role: {data.night.step}</p>
             <p className="lede">{nextStepLabel}: {data.night.nextStep ?? "Discussion"}</p>
             <p className="lede">{nightCountdown !== null ? `Time left: ${nightCountdown}s` : data.night.remaining}</p>
+          </div>
+        </div>
+      ) : null}
+
+      {showParallelResultModal ? (
+        <div className="overlay">
+          <div className="overlay-card action-card">
+            <p className="eyebrow">Night results</p>
+            <h3>{data.night.role ?? "Your result"}</h3>
+            {(data.night.resultLines?.length ?? 0) > 0 ? (
+              <div className="lede" style={{ display: "grid", gap: 6 }}>
+                {data.night.resultLines?.map((line, index) => (
+                  <p key={`result-line-${index}`} className="lede">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="lede">No night result for your role.</p>
+            )}
+            <p className="lede">
+              {parallelResultCountdown !== null
+                ? `Discussion starts in ${parallelResultCountdown}s`
+                : "Discussion starts soon"}
+            </p>
           </div>
         </div>
       ) : null}
@@ -656,23 +758,25 @@ export function GameScreen({
 
       {isHost ? (
         <div className="host-bar">
-          <Button
-            size="small"
-            variant="success"
-            loading={hostNextLoading}
-            onClick={async () => {
-              if (!hostNextAction.onClick || hostNextLoading) return;
-              setHostNextLoading(true);
-              try {
-                await Promise.resolve(hostNextAction.onClick());
-              } finally {
-                setHostNextLoading(false);
-              }
-            }}
-            disabled={hostNextAction.disabled}
-          >
-            {hostNextAction.label}
-          </Button>
+          {showHostProgressButton ? (
+            <Button
+              size="small"
+              variant="success"
+              loading={hostNextLoading}
+              onClick={async () => {
+                if (!hostNextAction.onClick || hostNextLoading) return;
+                setHostNextLoading(true);
+                try {
+                  await Promise.resolve(hostNextAction.onClick());
+                } finally {
+                  setHostNextLoading(false);
+                }
+              }}
+              disabled={hostNextAction.disabled}
+            >
+              {hostNextAction.label}
+            </Button>
+          ) : null}
           <Button
             size="small"
             variant="ghost"
@@ -689,6 +793,12 @@ export function GameScreen({
             disabled={!onEndGame}
           >
             End game
+          </Button>
+        </div>
+      ) : data.phase === "deal" ? (
+        <div className="host-bar">
+          <Button size="small" variant="ghost" disabled>
+            Waiting for host to start night
           </Button>
         </div>
       ) : null}
