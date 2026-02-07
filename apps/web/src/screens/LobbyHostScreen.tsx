@@ -241,8 +241,9 @@ export function LobbyHostScreen({
         </section>
       </div>
 
-      <div className="cta-row">
+      <div className="host-bar lobby-bottom-bar">
         <Button
+          size="small"
           variant="success"
           loading={startLoading}
           disabled={!rolesComplete || !onStartGame}
@@ -259,6 +260,7 @@ export function LobbyHostScreen({
           Start game
         </Button>
         <Button
+          size="small"
           variant="ghost"
           loading={endLoading}
           onClick={async () => {

@@ -129,8 +129,9 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
               </div>
             ))}
           </div>
-          <div className="player-ready-cta">
+          <div className="host-bar lobby-bottom-bar">
             <Button
+              size="small"
               variant="success"
               loading={readyLoading}
               onClick={async () => {
@@ -147,6 +148,7 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
               {isReady ? "Unready" : "Ready"}
             </Button>
             <Button
+              size="small"
               variant="ghost"
               loading={leaveLoading}
               onClick={async () => {

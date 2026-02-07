@@ -52,6 +52,7 @@ type GameScreenData = {
     blinkCardIds?: string[];
     revealedRolesByCardId?: Record<string, string>;
     cardAnnotationsByCardId?: Record<string, string>;
+    resultLines?: string[];
   };
   discussion: { timer: string; tokenRoleOptions?: Array<{ label: string; value: string }> };
   voting: { timer: string };
@@ -141,29 +142,50 @@ const roleInstructions: Record<string, string> = {
 const buildRoleInstruction = (
   roleKey: string,
   privateView: PrivateView | undefined,
-  playerNameById: Map<string, string>
+  playerNameById: Map<string, string>,
+  isParallelNight: boolean
 ) => {
+  const namesFor = (ids: string[]) => ids.map((id) => playerNameById.get(id) ?? id);
+
   if (roleKey === "werewolf") {
     if (privateView?.kind === "werewolfSoloPeek") {
       return `You peeked Center ${privateView.centerIndex + 1}: ${roleLabels[privateView.role] ?? privateView.role}.`;
     }
     if (privateView?.kind === "werewolfSoloStatus" && privateView.isSolo) {
-      return "You are alone. Look at one highlighted center card.";
+      return "You are the only werewolf. Tap one highlighted center card before time ends.";
     }
     if (privateView?.kind === "werewolfSawWerewolves") {
-      return "Find the highlighted werewolf card.";
+      if (!isParallelNight) {
+        return "Look for the highlighted werewolf card.";
+      }
+      const names = namesFor(privateView.werewolfIds);
+      if (names.length > 0) {
+        return `Your fellow werewolf${names.length > 1 ? "s are" : " is"} ${names.join(", ")}.`;
+      }
+      return "No other werewolves were revealed.";
     }
   }
 
   if (roleKey === "minion" && privateView?.kind === "minionSawWerewolves") {
-    return "Werewolves are highlighted. Remember them before discussion.";
+    if (!isParallelNight) {
+      return "Werewolves are highlighted. Memorize before discussion.";
+    }
+    const names = namesFor(privateView.werewolfIds);
+    if (names.length > 0) {
+      return `Werewolf${names.length > 1 ? "s" : ""}: ${names.join(", ")}. Keep them hidden.`;
+    }
+    return "No werewolves are in play. Blend in during discussion.";
   }
 
   if (roleKey === "mason" && privateView?.kind === "masonSawMasons") {
     if ((privateView.masonIds?.length ?? 0) === 0) {
       return "You are the only mason.";
     }
-    return "Other masons are highlighted.";
+    if (!isParallelNight) {
+      return "Look for the highlighted mason card.";
+    }
+    const names = namesFor(privateView.masonIds);
+    return `Other mason${names.length > 1 ? "s" : ""}: ${names.join(", ")}.`;
   }
 
   if (roleKey === "seer") {
@@ -212,6 +234,60 @@ const buildRoleInstruction = (
   }
 
   return roleInstructions[roleKey] ?? roleInstructions.villager;
+};
+
+const buildResultLines = (
+  roleKey: string,
+  privateView: PrivateView | undefined,
+  playerNameById: Map<string, string>
+): string[] => {
+  const isParallelForFallback = true;
+  const roleLabel = (role?: string) => (role ? roleLabels[role] ?? role : "Unknown");
+  const nameFor = (id: string) => playerNameById.get(id) ?? id;
+
+  if (!privateView) return [];
+
+  switch (privateView.kind) {
+    case "werewolfSoloPeek":
+      return [
+        "You were the only werewolf in play.",
+        `You peeked Center ${privateView.centerIndex + 1}: ${roleLabel(privateView.role)}.`,
+      ];
+    case "werewolfSoloStatus":
+      return privateView.isSolo ? ["You were the only werewolf in play."] : [];
+    case "werewolfSawWerewolves":
+      return privateView.werewolfIds.length > 0
+        ? [`Fellow werewolf${privateView.werewolfIds.length > 1 ? "s" : ""}: ${privateView.werewolfIds.map(nameFor).join(", ")}.`]
+        : ["No fellow werewolves were revealed."];
+    case "minionSawWerewolves":
+      return privateView.werewolfIds.length > 0
+        ? [`Werewolf${privateView.werewolfIds.length > 1 ? "s" : ""}: ${privateView.werewolfIds.map(nameFor).join(", ")}.`]
+        : ["No werewolves are in play."];
+    case "masonSawMasons":
+      return privateView.masonIds.length > 0
+        ? [`Other mason${privateView.masonIds.length > 1 ? "s" : ""}: ${privateView.masonIds.map(nameFor).join(", ")}.`]
+        : ["You are the only mason."];
+    case "seerViewPlayer":
+      return [`You saw ${nameFor(privateView.targetPlayerId)}: ${roleLabel(privateView.role)}.`];
+    case "seerViewCenter":
+      return privateView.center.map(
+        (item) => `Center ${item.centerIndex + 1}: ${roleLabel(item.role)}.`
+      );
+    case "robberNewRole":
+      return [`Your new role is ${roleLabel(privateView.role)}.`];
+    case "drunkSwapped":
+      return [`You swapped with Center ${privateView.centerIndex + 1}.`];
+    case "troublemakerSwapped":
+      return [
+        `You swapped ${nameFor(privateView.targetPlayerIds[0])} and ${nameFor(privateView.targetPlayerIds[1])}.`,
+      ];
+    case "insomniacFinalRole":
+      return [`Your final role is ${roleLabel(privateView.role)}.`];
+    case "dopplegangerCopiedRole":
+      return [`You copied ${roleLabel(privateView.role)}.`];
+    default:
+      return roleKey ? [buildRoleInstruction(roleKey, privateView, playerNameById, isParallelForFallback)] : [];
+  }
 };
 
 const formatSeconds = (seconds: number) => {
@@ -353,7 +429,8 @@ export const mapGameData = (
     mappedPhase === "parallelResult" ? roleLabels[roleKey] ?? "Night" : roleLabels[stepRole] ?? "Night";
   const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
   const playerNameById = new Map(state.players.map((item) => [item.playerId, item.name]));
-  const roleInstruction = buildRoleInstruction(roleKey, privateView, playerNameById);
+  const isParallelNight = state.night?.mode === "parallel";
+  const roleInstruction = buildRoleInstruction(roleKey, privateView, playerNameById, isParallelNight);
   const selectedRoleSet = new Set(state.roleSelection);
   const orderedSelectedRoles = [
     ...nightOrder.filter((role) => selectedRoleSet.has(role)),
@@ -381,37 +458,79 @@ export const mapGameData = (
   const blinkCardIds = new Set<string>();
   const selectableCardIds: string[] = [];
   const inNightPhase = mappedPhase === "night" || mappedPhase === "parallelResult";
-  const isParallelNight = state.night?.mode === "parallel";
   const canShowActionReveal = (actionRole: string) =>
     inNightPhase && (isParallelNight || stepRole === actionRole);
 
   if (privateView?.kind === "werewolfSoloPeek" && canShowActionReveal("werewolf")) {
     revealedRolesByCardId[`center-${privateView.centerIndex}`] = privateView.role;
+    if (isParallelNight) {
+      cardAnnotationsByCardId[`center-${privateView.centerIndex}`] = "You peeked this center card";
+    }
   }
   if (privateView?.kind === "seerViewPlayer" && canShowActionReveal("seer")) {
     revealedRolesByCardId[privateView.targetPlayerId] = privateView.role;
+    if (isParallelNight) {
+      cardAnnotationsByCardId[privateView.targetPlayerId] = "Seen by you";
+    }
   }
   if (privateView?.kind === "seerViewCenter" && canShowActionReveal("seer")) {
     privateView.center.forEach((item) => {
       revealedRolesByCardId[`center-${item.centerIndex}`] = item.role;
+      if (isParallelNight) {
+        cardAnnotationsByCardId[`center-${item.centerIndex}`] = "Seen by you";
+      }
     });
   }
   if (privateView?.kind === "robberNewRole" && playerId && canShowActionReveal("robber")) {
     revealedRolesByCardId[playerId] = privateView.role;
-    cardAnnotationsByCardId[playerId] = "Your new role";
+    if (isParallelNight) {
+      cardAnnotationsByCardId[playerId] = "Your new role";
+    }
+  }
+  if (privateView?.kind === "drunkSwapped" && canShowActionReveal("drunk")) {
+    if (isParallelNight) {
+      cardAnnotationsByCardId[`center-${privateView.centerIndex}`] = "You swapped with this center card";
+    }
+  }
+  if (privateView?.kind === "troublemakerSwapped" && canShowActionReveal("troublemaker")) {
+    const [a, b] = privateView.targetPlayerIds;
+    if (isParallelNight) {
+      cardAnnotationsByCardId[a] = "Swapped by you";
+      cardAnnotationsByCardId[b] = "Swapped by you";
+    }
   }
   if (privateView?.kind === "insomniacFinalRole" && playerId && canShowActionReveal("insomniac")) {
     revealedRolesByCardId[playerId] = privateView.role;
-    cardAnnotationsByCardId[playerId] = "Final role";
+    if (isParallelNight) {
+      cardAnnotationsByCardId[playerId] = "Final role";
+    }
   }
   if (privateView?.kind === "werewolfSawWerewolves") {
-    privateView.werewolfIds.filter((id) => id !== playerId).forEach((id) => blinkCardIds.add(id));
+    privateView.werewolfIds.filter((id) => id !== playerId).forEach((id) => {
+      blinkCardIds.add(id);
+      if (canShowActionReveal("werewolf")) {
+        revealedRolesByCardId[id] = "werewolf";
+        cardAnnotationsByCardId[id] = "Fellow werewolf";
+      }
+    });
   }
   if (privateView?.kind === "minionSawWerewolves") {
-    privateView.werewolfIds.forEach((id) => blinkCardIds.add(id));
+    privateView.werewolfIds.forEach((id) => {
+      blinkCardIds.add(id);
+      if (canShowActionReveal("minion")) {
+        revealedRolesByCardId[id] = "werewolf";
+        cardAnnotationsByCardId[id] = "Werewolf";
+      }
+    });
   }
   if (privateView?.kind === "masonSawMasons") {
-    privateView.masonIds.filter((id) => id !== playerId).forEach((id) => blinkCardIds.add(id));
+    privateView.masonIds.filter((id) => id !== playerId).forEach((id) => {
+      blinkCardIds.add(id);
+      if (canShowActionReveal("mason")) {
+        revealedRolesByCardId[id] = "mason";
+        cardAnnotationsByCardId[id] = "Other mason";
+      }
+    });
   }
   if (privateView?.kind === "werewolfSoloStatus" && privateView.isSolo) {
     selectableCardIds.push("center-0", "center-1", "center-2");
@@ -456,6 +575,7 @@ export const mapGameData = (
         blinkCardIds: [...blinkCardIds],
         revealedRolesByCardId,
         cardAnnotationsByCardId,
+        resultLines: buildResultLines(roleKey, privateView, playerNameById),
       },
       discussion: {
         timer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : "00:00",

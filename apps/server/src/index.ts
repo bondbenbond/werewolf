@@ -579,6 +579,36 @@ const scheduleVotingAutoReveal = (record: GameRecord) => {
   }, delay);
 };
 
+const queueParallelInfoResults = (record: GameRecord) => {
+  const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+  wolves.forEach((wolfId) => {
+    if (record.pendingParallelViews.has(wolfId)) return;
+    if (isPlayerAloneWerewolf(record.state, wolfId)) {
+      record.pendingParallelViews.set(wolfId, { kind: "werewolfSoloStatus", isSolo: true });
+    } else {
+      record.pendingParallelViews.set(wolfId, {
+        kind: "werewolfSawWerewolves",
+        werewolfIds: wolves.filter((id) => id !== wolfId),
+      });
+    }
+  });
+
+  const minions = eligiblePlayersForNightRole(record.state, "minion");
+  minions.forEach((minionId) => {
+    if (record.pendingParallelViews.has(minionId)) return;
+    record.pendingParallelViews.set(minionId, { kind: "minionSawWerewolves", werewolfIds: wolves });
+  });
+
+  const masons = eligiblePlayersForNightRole(record.state, "mason");
+  masons.forEach((masonId) => {
+    if (record.pendingParallelViews.has(masonId)) return;
+    record.pendingParallelViews.set(masonId, {
+      kind: "masonSawMasons",
+      masonIds: masons.filter((id) => id !== masonId),
+    });
+  });
+};
+
 const startNight = (record: GameRecord) => {
   clearNightStepTimer(record);
   clearParallelNightTimer(record);
@@ -643,10 +673,14 @@ const startNight = (record: GameRecord) => {
       advanceNightStep(record);
       appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
     }, getNightStepMs(record));
-    // Info-only roles get their info immediately in parallel mode.
-    emitInfoForStepRole("werewolf");
-    emitInfoForStepRole("minion");
-    emitInfoForStepRole("mason");
+    // Only send lone-werewolf action hint immediately so they can choose a center card.
+    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+    wolves.forEach((wolfId) => {
+      if (!isPlayerAloneWerewolf(record.state, wolfId)) return;
+      const view: PrivateView = { kind: "werewolfSoloStatus", isSolo: true };
+      record.privateViews.set(wolfId, view);
+      emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
+    });
   } else {
     const stepRole = record.nightSteps[0] ?? null;
     const completionByPlayer: Record<string, boolean> = {};
@@ -684,6 +718,7 @@ const advanceNightStep = (record: GameRecord) => {
   if (!record.state.night) return;
   clearNightStepTimer(record);
   if (record.state.night.mode === "parallel") {
+    queueParallelInfoResults(record);
     record.pendingParallelViews.forEach((view, playerId) => {
       record.privateViews.set(playerId, view);
       emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);

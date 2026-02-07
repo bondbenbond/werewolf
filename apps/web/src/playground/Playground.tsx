@@ -17,7 +17,7 @@ const screens = ["Home", "LobbyHost", "LobbyPlayer", "Game"] as const;
 
 export function Playground() {
   const forceDevMenu = new URL(window.location.href).searchParams.get("dev") === "1";
-  const showDevMenu = import.meta.env.DEV || forceDevMenu;
+  const showDevMenu = forceDevMenu;
   const [screen, setScreen] = useState<(typeof screens)[number]>("Home");
   const [open, setOpen] = useState(false);
   const gameBoardRef = useRef<GameBoardDevHandle>(null);
