@@ -46,6 +46,7 @@ export type Player = {
 
 export type GameSettings = {
   nightStepSeconds: number;
+  parallelResultSeconds: number;
   discussionSeconds: number;
   votingSeconds: number;
   allowVoteChanges: boolean;
@@ -152,6 +153,7 @@ export type PrivateView =
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: CenterIndex; role: Role }> }
   | { kind: "robberNewRole"; role: Role }
   | { kind: "drunkSwapped"; centerIndex: CenterIndex }
+  | { kind: "troublemakerSwapped"; targetPlayerIds: [string, string] }
   | { kind: "insomniacFinalRole"; role: Role };
 
 // Public state for UI consumption

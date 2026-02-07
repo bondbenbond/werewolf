@@ -8,6 +8,7 @@ type LobbyData = {
   roles: Array<{ name: string; count: number }>;
   settings: {
     nightStepSeconds: number;
+    parallelResultSeconds: number;
     discussionSeconds: number;
     votingSeconds: number;
   };
@@ -78,6 +79,7 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
 
       <div className="settings-summary">
         <span>Role timer: {data.settings.nightStepSeconds}s</span>
+        <span>Night results: {data.settings.parallelResultSeconds}s</span>
         <span>Discussion: {Math.round(data.settings.discussionSeconds / 60)}m</span>
         <span>Vote: {data.settings.votingSeconds}s</span>
       </div>

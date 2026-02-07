@@ -27,6 +27,7 @@ const PORT = Number(process.env.PORT ?? 4000);
 
 const DEFAULT_SETTINGS: GameSettings = {
   nightStepSeconds: 10,
+  parallelResultSeconds: 10,
   discussionSeconds: 300,
   votingSeconds: 20,
   allowVoteChanges: true,
@@ -46,6 +47,7 @@ type GameRecord = {
   streams: Set<NodeJS.WritableStream>;
   privateStreams: Map<string, Set<NodeJS.WritableStream>>;
   privateViews: Map<string, PrivateView>;
+  pendingParallelViews: Map<string, PrivateView>;
   nightSteps: Role[];
   dealTimer?: NodeJS.Timeout;
   nightCountdownTimer?: NodeJS.Timeout;
@@ -474,11 +476,14 @@ const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): Reveal
   if (eliminatedPlayerIds.some((id) => roles[id] === "tanner")) {
     return "tanner";
   }
+  const werewolvesInPlay = Object.values(roles).some((role) => role === "werewolf");
   if (eliminatedPlayerIds.some((id) => roles[id] === "werewolf")) {
     return "village";
   }
-  const werewolves = Object.values(roles).filter((role) => role === "werewolf");
-  if (werewolves.length === 0) return "village";
+  if (!werewolvesInPlay) {
+    // ONUW rule: if no werewolf is in play, village only wins when nobody dies.
+    return eliminatedPlayerIds.length === 0 ? "village" : "werewolves";
+  }
   return "werewolves";
 };
 
@@ -528,6 +533,7 @@ const removePlayerFromState = (record: GameRecord, playerId: string) => {
   }
   record.secrets.delete(playerId);
   record.privateViews.delete(playerId);
+  record.pendingParallelViews.delete(playerId);
   const streams = record.privateStreams.get(playerId);
   if (streams) {
     streams.forEach((stream) => {
@@ -542,9 +548,9 @@ const removePlayerFromState = (record: GameRecord, playerId: string) => {
 };
 
 const NIGHT_COUNTDOWN_MS = 3_000;
-const PARALLEL_NIGHT_MS = 10_000;
-const PARALLEL_RESULT_MS = 10_000;
 const getNightStepMs = (record: GameRecord) => Math.max(1, record.state.settings.nightStepSeconds) * 1000;
+const getParallelResultMs = (record: GameRecord) =>
+  Math.max(1, record.state.settings.parallelResultSeconds) * 1000;
 const getVotingMs = (record: GameRecord) => Math.max(1, record.state.settings.votingSeconds) * 1000;
 
 const scheduleDiscussionAutoAdvance = (record: GameRecord) => {
@@ -577,6 +583,7 @@ const startNight = (record: GameRecord) => {
   clearNightStepTimer(record);
   clearParallelNightTimer(record);
   clearParallelResultTimer(record);
+  record.pendingParallelViews.clear();
   record.nightSteps = buildNightSteps(record.state);
 
   const emitInfoForStepRole = (stepRole: Role | null) => {
@@ -628,16 +635,14 @@ const startNight = (record: GameRecord) => {
       stepRole: null,
       totalSteps: record.nightSteps.length,
       completionByPlayer,
-      endsAt: Date.now() + PARALLEL_NIGHT_MS,
+      endsAt: Date.now() + getNightStepMs(record),
       mode: "parallel",
     };
-    if (record.state.settings.autoAdvanceNight) {
-      clearParallelNightTimer(record);
-      record.parallelNightTimer = setTimeout(() => {
-        advanceNightStep(record);
-        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, PARALLEL_NIGHT_MS);
-    }
+    clearParallelNightTimer(record);
+    record.parallelNightTimer = setTimeout(() => {
+      advanceNightStep(record);
+      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+    }, getNightStepMs(record));
     // Info-only roles get their info immediately in parallel mode.
     emitInfoForStepRole("werewolf");
     emitInfoForStepRole("minion");
@@ -679,19 +684,22 @@ const advanceNightStep = (record: GameRecord) => {
   if (!record.state.night) return;
   clearNightStepTimer(record);
   if (record.state.night.mode === "parallel") {
+    record.pendingParallelViews.forEach((view, playerId) => {
+      record.privateViews.set(playerId, view);
+      emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+    });
+    record.pendingParallelViews.clear();
     record.state.phase = "parallelResult";
-    record.state.phaseEndsAt = Date.now() + PARALLEL_RESULT_MS;
+    record.state.phaseEndsAt = Date.now() + getParallelResultMs(record);
     record.state.night = undefined;
-    if (record.state.settings.autoAdvanceNight) {
-      clearParallelResultTimer(record);
-      record.parallelResultTimer = setTimeout(() => {
-        record.state.phase = "discussion";
-        record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
-        record.state.updatedAt = Date.now();
-        scheduleDiscussionAutoAdvance(record);
-        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, PARALLEL_RESULT_MS);
-    }
+    clearParallelResultTimer(record);
+    record.parallelResultTimer = setTimeout(() => {
+      record.state.phase = "discussion";
+      record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+      record.state.updatedAt = Date.now();
+      scheduleDiscussionAutoAdvance(record);
+      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+    }, getParallelResultMs(record));
     record.state.updatedAt = Date.now();
     return;
   }
@@ -865,6 +873,13 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       record.state.night.completionByPlayer[playerId] = true;
     }
   };
+  const setPlayerView = (view: PrivateView) => {
+    if (mode === "parallel") {
+      record.pendingParallelViews.set(playerId, view);
+      return;
+    }
+    record.privateViews.set(playerId, view);
+  };
 
   switch (action.kind) {
     case "done":
@@ -878,43 +893,67 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
         record.dopplegangerInsomniac.add(playerId);
       }
       markComplete();
-      return { kind: "dopplegangerCopiedRole", role: targetRole };
+      {
+        const view: PrivateView = { kind: "dopplegangerCopiedRole", role: targetRole };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "werewolfSoloPeek": {
       if (!isPlayerAloneWerewolf(record.state, playerId)) return null;
       const role = record.state.roles.centerRoles[action.centerIndex];
       markComplete();
-      return { kind: "werewolfSoloPeek", centerIndex: action.centerIndex, role };
+      {
+        const view: PrivateView = { kind: "werewolfSoloPeek", centerIndex: action.centerIndex, role };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "seerViewPlayer": {
       const role = getCurrentRole(record.state, action.targetPlayerId);
       if (!role) return null;
       markComplete();
-      return { kind: "seerViewPlayer", targetPlayerId: action.targetPlayerId, role };
+      {
+        const view: PrivateView = { kind: "seerViewPlayer", targetPlayerId: action.targetPlayerId, role };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "seerViewCenter": {
       const [a, b] = action.centerIndices;
       if (a === b) return null;
       markComplete();
-      return {
-        kind: "seerViewCenter",
-        center: [
-          { centerIndex: a, role: record.state.roles.centerRoles[a] },
-          { centerIndex: b, role: record.state.roles.centerRoles[b] },
-        ],
-      };
+      {
+        const view: PrivateView = {
+          kind: "seerViewCenter",
+          center: [
+            { centerIndex: a, role: record.state.roles.centerRoles[a] },
+            { centerIndex: b, role: record.state.roles.centerRoles[b] },
+          ],
+        };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "robberSwap": {
       if (playerId === action.targetPlayerId) return null;
       const newRole = applyRobberSwap(record.state, playerId, action.targetPlayerId);
       if (!newRole) return null;
       markComplete();
-      return { kind: "robberNewRole", role: newRole };
+      {
+        const view: PrivateView = { kind: "robberNewRole", role: newRole };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "drunkSwap": {
       applyDrunkSwap(record.state, playerId, action.centerIndex);
       markComplete();
-      return { kind: "drunkSwapped", centerIndex: action.centerIndex };
+      {
+        const view: PrivateView = { kind: "drunkSwapped", centerIndex: action.centerIndex };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "troublemakerSwap": {
       const [a, b] = action.targetPlayerIds;
@@ -922,13 +961,21 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       if (!record.state.playersById[a] || !record.state.playersById[b]) return null;
       applyTroublemakerSwap(record.state, a, b);
       markComplete();
-      return { kind: "none" };
+      {
+        const view: PrivateView = { kind: "troublemakerSwapped", targetPlayerIds: [a, b] };
+        setPlayerView(view);
+        return view;
+      }
     }
     case "insomniacPeek": {
       const role = getCurrentRole(record.state, playerId);
       if (!role) return null;
       markComplete();
-      return { kind: "insomniacFinalRole", role };
+      {
+        const view: PrivateView = { kind: "insomniacFinalRole", role };
+        setPlayerView(view);
+        return view;
+      }
     }
     default:
       return null;
@@ -980,6 +1027,7 @@ app.post(
       streams: new Set(),
       privateStreams: new Map(),
       privateViews: new Map(),
+      pendingParallelViews: new Map(),
       nightSteps: [],
       dopplegangerInsomniac: new Set(),
       historyLimit: Number.isFinite(HISTORY_LIMIT) && HISTORY_LIMIT > 0 ? HISTORY_LIMIT : 150,
@@ -1190,7 +1238,7 @@ app.post(
     }
     const payload = (body.command as any).payload as NightActionPayload;
     const view = handleNightAction(record, body.playerId, payload);
-    if (view) {
+    if (view && record.state.night?.mode !== "parallel") {
       record.privateViews.set(body.playerId, view);
       emitPrivate(record, body.playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
     }
@@ -1353,6 +1401,7 @@ app.post(
     record.state.voting = undefined;
     record.state.reveal = undefined;
     record.state.tokens = resetTokens(record.state.roleSelection.roles);
+    record.pendingParallelViews.clear();
     record.state.playerOrder.forEach((id) => {
       const player = record.state.playersById[id];
       if (player) player.ready = id === record.state.hostPlayerId;

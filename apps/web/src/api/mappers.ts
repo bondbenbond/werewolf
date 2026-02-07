@@ -10,6 +10,7 @@ type LobbyData = {
     autoAdvance: boolean;
     parallelNight: boolean;
     nightStepSeconds: number;
+    parallelResultSeconds: number;
     discussionSeconds: number;
     votingSeconds: number;
   };
@@ -31,10 +32,11 @@ type GameBoardData = {
 
 type GameScreenData = {
   board: GameBoardData;
-  phase: "deal" | "nightCountdown" | "night" | "discussion" | "voting" | "reveal";
+  phase: "deal" | "nightCountdown" | "night" | "parallelResult" | "discussion" | "voting" | "reveal";
   phaseTimer?: string;
   settings?: {
     autoAdvance?: boolean;
+    parallelNight?: boolean;
   };
   night: {
     step: string;
@@ -136,8 +138,15 @@ const roleInstructions: Record<string, string> = {
   villager: "No action. Keep eyes closed.",
 };
 
-const buildRoleInstruction = (roleKey: string, privateView?: PrivateView) => {
+const buildRoleInstruction = (
+  roleKey: string,
+  privateView: PrivateView | undefined,
+  playerNameById: Map<string, string>
+) => {
   if (roleKey === "werewolf") {
+    if (privateView?.kind === "werewolfSoloPeek") {
+      return `You peeked Center ${privateView.centerIndex + 1}: ${roleLabels[privateView.role] ?? privateView.role}.`;
+    }
     if (privateView?.kind === "werewolfSoloStatus" && privateView.isSolo) {
       return "You are alone. Look at one highlighted center card.";
     }
@@ -158,7 +167,17 @@ const buildRoleInstruction = (roleKey: string, privateView?: PrivateView) => {
   }
 
   if (roleKey === "seer") {
-    if (privateView?.kind === "seerViewPlayer" || privateView?.kind === "seerViewCenter") {
+    if (privateView?.kind === "seerViewPlayer") {
+      const target = playerNameById.get(privateView.targetPlayerId) ?? privateView.targetPlayerId;
+      return `You saw ${target}: ${roleLabels[privateView.role] ?? privateView.role}.`;
+    }
+    if (privateView?.kind === "seerViewCenter") {
+      const [a, b] = privateView.center;
+      if (a && b) {
+        const aRole = roleLabels[a.role] ?? a.role;
+        const bRole = roleLabels[b.role] ?? b.role;
+        return `You saw Center ${a.centerIndex + 1}: ${aRole}, Center ${b.centerIndex + 1}: ${bRole}.`;
+      }
       return "Vision complete. Memorize what you saw.";
     }
     return "Select one player card or two center cards.";
@@ -166,17 +185,30 @@ const buildRoleInstruction = (roleKey: string, privateView?: PrivateView) => {
 
   if (roleKey === "robber") {
     if (privateView?.kind === "robberNewRole") {
-      return "Swap complete. Your revealed card is your new role.";
+      return `Swap complete. Your new role is ${roleLabels[privateView.role] ?? privateView.role}.`;
     }
     return "Select a player card to swap with.";
   }
 
   if (roleKey === "troublemaker") {
+    if (privateView?.kind === "troublemakerSwapped") {
+      const [a, b] = privateView.targetPlayerIds;
+      const nameA = playerNameById.get(a) ?? a;
+      const nameB = playerNameById.get(b) ?? b;
+      return `You swapped ${nameA} and ${nameB}.`;
+    }
     return "Select two other player cards to swap.";
   }
 
   if (roleKey === "drunk") {
+    if (privateView?.kind === "drunkSwapped") {
+      return `You swapped with Center ${privateView.centerIndex + 1}.`;
+    }
     return "Select one center card to swap with.";
+  }
+
+  if (roleKey === "insomniac" && privateView?.kind === "insomniacFinalRole") {
+    return `Your final role is ${roleLabels[privateView.role] ?? privateView.role}.`;
   }
 
   return roleInstructions[roleKey] ?? roleInstructions.villager;
@@ -218,6 +250,8 @@ const roleFromPrivateView = (view?: PrivateView) => {
       return "werewolf";
     case "drunkSwapped":
       return "drunk";
+    case "troublemakerSwapped":
+      return "troublemaker";
     default:
       return null;
   }
@@ -267,6 +301,7 @@ export const mapLobbyData = (state: PublicGameState, gameId: string): LobbyData 
       autoAdvance: state.settings.autoAdvanceNight,
       parallelNight: state.settings.parallelNight,
       nightStepSeconds: state.settings.nightStepSeconds,
+      parallelResultSeconds: state.settings.parallelResultSeconds,
       discussionSeconds: state.settings.discussionSeconds,
       votingSeconds: state.settings.votingSeconds,
     },
@@ -293,11 +328,14 @@ export const mapGameData = (
     })),
   ];
 
-  const phaseMap: Record<string, "deal" | "nightCountdown" | "night" | "discussion" | "voting" | "reveal"> = {
+  const phaseMap: Record<
+    string,
+    "deal" | "nightCountdown" | "night" | "parallelResult" | "discussion" | "voting" | "reveal"
+  > = {
     deal: "deal",
     night: "night",
     nightCountdown: "nightCountdown",
-    parallelResult: "night",
+    parallelResult: "parallelResult",
     discussion: "discussion",
     voting: "voting",
     reveal: "reveal",
@@ -311,10 +349,11 @@ export const mapGameData = (
   const total = state.night ? Object.keys(state.night.completedThisStep).length : 0;
   const stepRole = state.night?.stepRole ?? "night";
   const nextStepRole = state.night?.nextStepRole ?? null;
-  const stepLabel = roleLabels[stepRole] ?? "Night";
+  const stepLabel =
+    mappedPhase === "parallelResult" ? roleLabels[roleKey] ?? "Night" : roleLabels[stepRole] ?? "Night";
   const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
-  const roleInstruction = buildRoleInstruction(roleKey, privateView);
   const playerNameById = new Map(state.players.map((item) => [item.playerId, item.name]));
+  const roleInstruction = buildRoleInstruction(roleKey, privateView, playerNameById);
   const selectedRoleSet = new Set(state.roleSelection);
   const orderedSelectedRoles = [
     ...nightOrder.filter((role) => selectedRoleSet.has(role)),
@@ -336,12 +375,12 @@ export const mapGameData = (
   const nightWaiting =
     state.night?.mode === "parallel"
       ? false
-      : mappedPhase === "night" && stepRole !== roleKey;
+      : (mappedPhase === "night" || mappedPhase === "parallelResult") && stepRole !== roleKey;
   const revealedRolesByCardId: Record<string, string> = {};
   const cardAnnotationsByCardId: Record<string, string> = {};
   const blinkCardIds = new Set<string>();
   const selectableCardIds: string[] = [];
-  const inNightPhase = mappedPhase === "night";
+  const inNightPhase = mappedPhase === "night" || mappedPhase === "parallelResult";
   const isParallelNight = state.night?.mode === "parallel";
   const canShowActionReveal = (actionRole: string) =>
     inNightPhase && (isParallelNight || stepRole === actionRole);
@@ -398,6 +437,7 @@ export const mapGameData = (
       phaseTimer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : undefined,
       settings: {
         autoAdvance: state.settings.autoAdvanceNight,
+        parallelNight: state.settings.parallelNight,
       },
       night: {
         step: stepLabel,
