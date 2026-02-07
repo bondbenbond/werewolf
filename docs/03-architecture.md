@@ -18,7 +18,7 @@ The system is a real-time multiplayer web app with two clients:
 - Host UI (typically iPad, but could be any device)
 - Player UI (phones)
 
-A single Node + Socket.IO server is the source of truth for:
+A single Node server with REST + SSE is the source of truth for:
 - rooms
 - players
 - roles and center cards
@@ -38,19 +38,19 @@ Clients are thin:
 
 ### Frontend
 - Vite + React + TypeScript
-- Socket.IO client
+- REST + SSE client (EventSource or fetch streaming)
 - Mobile-first UI (big tap targets, minimal scrolling)
 
 ### Backend
 - Node.js + TypeScript
-- Socket.IO for real-time
+- REST for commands, SSE for events
 - In-memory game state (Map keyed by room code)
 
 ### Shared Types
 - packages/shared contains:
   - GameState model
   - enums (Phase, Role)
-  - Socket event payload types
+  - REST/SSE payload types
 
 ---
 
@@ -78,8 +78,8 @@ werewolf/
 All game truth lives on the server.
 
 - Server creates and mutates GameState
-- Clients request actions
-- Server validates, updates state, and broadcasts updates
+- Clients request actions via REST commands
+- Server validates, updates state, and publishes events via SSE
 
 ---
 
@@ -151,8 +151,8 @@ Host advances steps.
 ## Reconnect Strategy (v1)
 
 - Client stores roomCode, playerId, secret
-- On reconnect, sends resume request
-- Server reattaches if valid
+- On reconnect, client opens SSE with `since=lastKnownVersion`
+- If too far behind, client requests snapshot + replays events
 
 Server restart ends rooms (acceptable v1).
 
@@ -161,8 +161,8 @@ Server restart ends rooms (acceptable v1).
 ## Deployment Notes
 
 - Frontend: static hosting
-- Backend: WebSocket-capable host
-- HTTPS + WSS required
+- Backend: host supporting HTTP long-lived connections (SSE)
+- HTTPS required
 
 ---
 
@@ -171,4 +171,4 @@ Server restart ends rooms (acceptable v1).
 - Database persistence
 - Spectator mode
 - Full role expansions
-- Replay system
+- Full replay system (beyond short event history)

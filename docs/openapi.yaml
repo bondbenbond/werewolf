@@ -1,0 +1,958 @@
+openapi: 3.1.0
+info:
+  title: Werewolf REST + SSE API
+  version: 0.1.0
+  description: Server-authoritative, versioned command + event API using REST and SSE.
+servers:
+  - url: http://localhost:4000
+paths:
+  /games:
+    post:
+      summary: Create a new game
+      operationId: createGame
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostName]
+              properties:
+                hostName:
+                  type: string
+      responses:
+        "201":
+          description: Game created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateGameResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /games/{gameId}/join:
+    post:
+      summary: Join an existing game
+      operationId: joinGame
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/GameId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Player joined
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinGameResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Game not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /games/{gameId}/commands:
+    post:
+      summary: Submit a command
+      operationId: submitCommand
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/GameId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommandEnvelope"
+      responses:
+        "202":
+          description: Command accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Version mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionMismatchResponse"
+
+  /games/{gameId}/snapshot:
+    get:
+      summary: Get a snapshot of current public state (or include private view if authenticated)
+      operationId: getSnapshot
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/GameId"
+        - name: playerId
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/PlayerId"
+        - name: secret
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Secret"
+      responses:
+        "200":
+          description: Snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotResponse"
+        "404":
+          description: Game not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /games/{gameId}/events:
+    get:
+      summary: Get events since a version
+      operationId: getEventsSince
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/GameId"
+        - name: since
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Event list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatch"
+        "404":
+          description: Game not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: History expired; fetch snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /games/{gameId}/stream:
+    get:
+      summary: Stream events via SSE
+      operationId: streamEvents
+      description: |
+        SSE emits four event types: `public`, `private`, `hello`, `heartbeat`.
+        - `public` events update shared UI state.
+        - `private` events update the authenticated player's private view.
+      parameters:
+        - name: gameId
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/GameId"
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+        - name: playerId
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/PlayerId"
+        - name: secret
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Secret"
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: History expired; fetch snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    GameId:
+      type: string
+      description: Short room code
+
+    PlayerId:
+      type: string
+
+    Secret:
+      type: string
+
+    Phase:
+      type: string
+      enum: [lobby, deal, nightCountdown, night, parallelResult, discussion, voting, reveal]
+
+    Role:
+      type: string
+      enum: [villager, werewolf, minion, mason, doppleganger, seer, robber, drunk, troublemaker, insomniac, tanner]
+
+    GameSettings:
+      type: object
+      required:
+        - discussionSeconds
+        - allowVoteChanges
+        - anonymousVotes
+        - showActionLogOnReveal
+        - tokensEnabled
+        - parallelNight
+        - autoAdvanceNight
+      properties:
+        discussionSeconds:
+          type: integer
+          minimum: 30
+        allowVoteChanges:
+          type: boolean
+        anonymousVotes:
+          type: boolean
+        showActionLogOnReveal:
+          type: boolean
+        tokensEnabled:
+          type: boolean
+        parallelNight:
+          type: boolean
+        autoAdvanceNight:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    VersionMismatchResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          required: [serverVersion, replayFromVersion]
+          properties:
+            serverVersion:
+              type: integer
+            replayFromVersion:
+              type: integer
+
+    CreateGameResponse:
+      type: object
+      required: [gameId, host, version]
+      properties:
+        gameId:
+          $ref: "#/components/schemas/GameId"
+        host:
+          type: object
+          required: [playerId, name, secret]
+          properties:
+            playerId:
+              $ref: "#/components/schemas/PlayerId"
+            name:
+              type: string
+            secret:
+              $ref: "#/components/schemas/Secret"
+        version:
+          type: integer
+          minimum: 0
+
+    JoinGameResponse:
+      type: object
+      required: [playerId, name, secret, version]
+      properties:
+        playerId:
+          $ref: "#/components/schemas/PlayerId"
+        name:
+          type: string
+        secret:
+          $ref: "#/components/schemas/Secret"
+        version:
+          type: integer
+          minimum: 0
+
+    CommandEnvelope:
+      type: object
+      required: [playerId, secret, lastKnownVersion, command]
+      properties:
+        playerId:
+          $ref: "#/components/schemas/PlayerId"
+        secret:
+          $ref: "#/components/schemas/Secret"
+        lastKnownVersion:
+          type: integer
+          minimum: 0
+        command:
+          $ref: "#/components/schemas/Command"
+
+    Command:
+      oneOf:
+        - $ref: "#/components/schemas/SetReadyCommand"
+        - $ref: "#/components/schemas/UpdateSettingsCommand"
+        - $ref: "#/components/schemas/UpdateRolesCommand"
+        - $ref: "#/components/schemas/StartGameCommand"
+        - $ref: "#/components/schemas/AckRoleCommand"
+        - $ref: "#/components/schemas/StartNightCommand"
+        - $ref: "#/components/schemas/AdvanceNightStepCommand"
+        - $ref: "#/components/schemas/NightActionCommand"
+        - $ref: "#/components/schemas/PlaceTokenCommand"
+        - $ref: "#/components/schemas/RemoveTokenCommand"
+        - $ref: "#/components/schemas/ClearTokensCommand"
+        - $ref: "#/components/schemas/StartVotingCommand"
+        - $ref: "#/components/schemas/SubmitVoteCommand"
+        - $ref: "#/components/schemas/LockVotesCommand"
+        - $ref: "#/components/schemas/RevealResultsCommand"
+        - $ref: "#/components/schemas/ResetGameCommand"
+
+    CommandBase:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+        payload:
+          type: object
+
+    SetReadyCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: SET_READY
+            payload:
+              type: object
+              required: [ready]
+              properties:
+                ready:
+                  type: boolean
+
+    UpdateSettingsCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: UPDATE_SETTINGS
+            payload:
+              type: object
+              required: [settings]
+              properties:
+                settings:
+                  $ref: "#/components/schemas/GameSettings"
+
+    UpdateRolesCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: UPDATE_ROLES
+            payload:
+              type: object
+              required: [roles]
+              properties:
+                roles:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Role"
+
+    StartGameCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: START_GAME
+
+    AckRoleCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: ACK_ROLE
+
+    StartNightCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: START_NIGHT
+
+    AdvanceNightStepCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: ADVANCE_NIGHT_STEP
+
+    NightActionCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: NIGHT_ACTION
+            payload:
+              $ref: "#/components/schemas/NightActionPayload"
+
+    NightActionPayload:
+      oneOf:
+        - $ref: "#/components/schemas/NightActionDone"
+        - $ref: "#/components/schemas/DopplegangerCopy"
+        - $ref: "#/components/schemas/WerewolfSoloPeek"
+        - $ref: "#/components/schemas/SeerViewPlayer"
+        - $ref: "#/components/schemas/SeerViewCenter"
+        - $ref: "#/components/schemas/RobberSwap"
+        - $ref: "#/components/schemas/DrunkSwap"
+        - $ref: "#/components/schemas/TroublemakerSwap"
+        - $ref: "#/components/schemas/InsomniacPeekFinal"
+
+    NightActionDone:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          const: done
+
+    DopplegangerCopy:
+      type: object
+      required: [kind, targetPlayerId]
+      properties:
+        kind:
+          const: dopplegangerCopy
+        targetPlayerId:
+          $ref: "#/components/schemas/PlayerId"
+
+    WerewolfSoloPeek:
+      type: object
+      required: [kind, centerIndex]
+      properties:
+        kind:
+          const: werewolfSoloPeek
+        centerIndex:
+          type: integer
+          enum: [0, 1, 2]
+
+    SeerViewPlayer:
+      type: object
+      required: [kind, targetPlayerId]
+      properties:
+        kind:
+          const: seerViewPlayer
+        targetPlayerId:
+          $ref: "#/components/schemas/PlayerId"
+
+    SeerViewCenter:
+      type: object
+      required: [kind, centerIndices]
+      properties:
+        kind:
+          const: seerViewCenter
+        centerIndices:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: integer
+            enum: [0, 1, 2]
+
+    RobberSwap:
+      type: object
+      required: [kind, targetPlayerId]
+      properties:
+        kind:
+          const: robberSwap
+        targetPlayerId:
+          $ref: "#/components/schemas/PlayerId"
+
+    DrunkSwap:
+      type: object
+      required: [kind, centerIndex]
+      properties:
+        kind:
+          const: drunkSwap
+        centerIndex:
+          type: integer
+          enum: [0, 1, 2]
+
+    TroublemakerSwap:
+      type: object
+      required: [kind, targetPlayerIds]
+      properties:
+        kind:
+          const: troublemakerSwap
+        targetPlayerIds:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/PlayerId"
+
+    InsomniacPeekFinal:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          const: insomniacPeek
+
+    PlaceTokenCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: PLACE_TOKEN
+            payload:
+              type: object
+              required: [targetId]
+              properties:
+                targetId:
+                  type: string
+                  description: PlayerId or center-{0|1|2}
+                role:
+                  $ref: "#/components/schemas/Role"
+
+    RemoveTokenCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: REMOVE_TOKEN
+            payload:
+              type: object
+              required: [targetId]
+              properties:
+                targetId:
+                  type: string
+
+    ClearTokensCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: CLEAR_TOKENS
+
+    StartVotingCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: START_VOTING
+
+    SubmitVoteCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: SUBMIT_VOTE
+            payload:
+              type: object
+              required: [targetPlayerId]
+              properties:
+                targetPlayerId:
+                  $ref: "#/components/schemas/PlayerId"
+
+    LockVotesCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: LOCK_VOTES
+            payload:
+              type: object
+              required: [locked]
+              properties:
+                locked:
+                  type: boolean
+
+    RevealResultsCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: REVEAL_RESULTS
+
+    ResetGameCommand:
+      allOf:
+        - $ref: "#/components/schemas/CommandBase"
+        - type: object
+          properties:
+            type:
+              const: RESET_GAME
+
+    CommandResponse:
+      type: object
+      required: [accepted, appliedVersion, events]
+      properties:
+        accepted:
+          type: boolean
+        appliedVersion:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    Event:
+      type: object
+      required: [version, type, payload, createdAt]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+        payload:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+
+    PublicEvent:
+      allOf:
+        - $ref: "#/components/schemas/Event"
+      description: Event safe to apply to public UI state.
+
+    PrivateEvent:
+      allOf:
+        - $ref: "#/components/schemas/Event"
+      description: Event delivered only to the authenticated player (private view).
+
+    PrivateView:
+      oneOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind:
+              const: none
+        - type: object
+          required: [kind, role]
+          properties:
+            kind:
+              const: yourOriginalRole
+            role:
+              $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, role]
+          properties:
+            kind:
+              const: dopplegangerCopiedRole
+            role:
+              $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, werewolfIds]
+          properties:
+            kind:
+              const: minionSawWerewolves
+            werewolfIds:
+              type: array
+              items:
+                $ref: "#/components/schemas/PlayerId"
+        - type: object
+          required: [kind, masonIds]
+          properties:
+            kind:
+              const: masonSawMasons
+            masonIds:
+              type: array
+              items:
+                $ref: "#/components/schemas/PlayerId"
+        - type: object
+          required: [kind, werewolfIds]
+          properties:
+            kind:
+              const: werewolfSawWerewolves
+            werewolfIds:
+              type: array
+              items:
+                $ref: "#/components/schemas/PlayerId"
+        - type: object
+          required: [kind, isSolo]
+          properties:
+            kind:
+              const: werewolfSoloStatus
+            isSolo:
+              type: boolean
+        - type: object
+          required: [kind, centerIndex, role]
+          properties:
+            kind:
+              const: werewolfSoloPeek
+            centerIndex:
+              type: integer
+              enum: [0, 1, 2]
+            role:
+              $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, targetPlayerId, role]
+          properties:
+            kind:
+              const: seerViewPlayer
+            targetPlayerId:
+              $ref: "#/components/schemas/PlayerId"
+            role:
+              $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, center]
+          properties:
+            kind:
+              const: seerViewCenter
+            center:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items:
+                type: object
+                required: [centerIndex, role]
+                properties:
+                  centerIndex:
+                    type: integer
+                    enum: [0, 1, 2]
+                  role:
+                    $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, role]
+          properties:
+            kind:
+              const: robberNewRole
+            role:
+              $ref: "#/components/schemas/Role"
+        - type: object
+          required: [kind, centerIndex]
+          properties:
+            kind:
+              const: drunkSwapped
+            centerIndex:
+              type: integer
+              enum: [0, 1, 2]
+        - type: object
+          required: [kind, role]
+          properties:
+            kind:
+              const: insomniacFinalRole
+            role:
+              $ref: "#/components/schemas/Role"
+
+    SnapshotResponse:
+      type: object
+      required: [version, state]
+      properties:
+        version:
+          type: integer
+        state:
+          $ref: "#/components/schemas/PublicGameState"
+        private:
+          $ref: "#/components/schemas/PrivateView"
+
+    EventBatch:
+      type: object
+      required: [fromVersion, toVersion, events]
+      properties:
+        fromVersion:
+          type: integer
+        toVersion:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+
+    PublicGameState:
+      type: object
+      properties:
+        phase:
+          $ref: "#/components/schemas/Phase"
+        phaseEndsAt:
+          type: integer
+          description: Epoch ms
+        gameName:
+          type: string
+        maxPlayers:
+          type: integer
+        hostPlayerId:
+          $ref: "#/components/schemas/PlayerId"
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicPlayer"
+        roleSelection:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+        settings:
+          $ref: "#/components/schemas/GameSettings"
+        tokenPoolByRole:
+          type: object
+          additionalProperties:
+            type: integer
+        dealAcks:
+          type: object
+          additionalProperties:
+            type: boolean
+        night:
+          $ref: "#/components/schemas/PublicNightState"
+        tokens:
+          $ref: "#/components/schemas/PublicTokensState"
+        voting:
+          $ref: "#/components/schemas/PublicVotingState"
+        reveal:
+          $ref: "#/components/schemas/PublicRevealState"
+
+    PublicPlayer:
+      type: object
+      required: [playerId, name, connected, ready]
+      properties:
+        playerId:
+          $ref: "#/components/schemas/PlayerId"
+        name:
+          type: string
+        connected:
+          type: boolean
+        ready:
+          type: boolean
+        hasVoted:
+          type: boolean
+
+    PublicNightState:
+      type: object
+      properties:
+        stepRole:
+          anyOf:
+            - $ref: "#/components/schemas/Role"
+            - type: "null"
+        completedThisStep:
+          type: object
+          additionalProperties:
+            type: boolean
+        stepIndex:
+          type: integer
+        totalSteps:
+          type: integer
+        endsAt:
+          type: integer
+        mode:
+          type: string
+          enum: [sequential, parallel]
+
+    PublicTokensState:
+      type: object
+      properties:
+        tokensByPlayer:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+        suspectRolesByPlayer:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              $ref: "#/components/schemas/Role"
+
+    PublicVotingState:
+      type: object
+      properties:
+        locked:
+          type: boolean
+        tally:
+          type: object
+          additionalProperties:
+            type: integer
+
+    PublicRevealState:
+      type: object
+      properties:
+        eliminatedPlayerIds:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerId"
+        winners:
+          type: string
+          enum: [village, werewolves, tanner]
+        finalRoles:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Role"
+        centerRoles:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/Role"

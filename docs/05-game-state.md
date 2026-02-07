@@ -5,14 +5,14 @@ This document defines the canonical **server-authoritative** game state model an
 It is designed to be **TypeScript-friendly** and used as the source of truth for:
 - server logic
 - client rendering
-- Socket.IO payloads (public vs private views)
+- REST/SSE payloads (public vs private views)
 
 Constraints:
 - **No spectators**
 - **Public suspicion tokens**
 - **Host-driven phases**
 - **In-memory rooms (v1)**
-- Roles included: **Villagers, Werewolf, Minion, Seer, Robber, Troublemaker, Insomniac**
+- Roles included: **Villagers, Werewolf, Minion, Mason, Seer, Robber, Troublemaker, Insomniac**
 
 ---
 
@@ -32,7 +32,9 @@ Constraints:
 export type Phase =
   | "lobby"
   | "deal"
+  | "nightCountdown"
   | "night"
+  | "parallelResult"
   | "discussion"
   | "voting"
   | "reveal";
@@ -41,10 +43,14 @@ export type Role =
   | "villager"
   | "werewolf"
   | "minion"
+  | "mason"
+  | "doppleganger"
   | "seer"
   | "robber"
+  | "drunk"
   | "troublemaker"
-  | "insomniac";
+  | "insomniac"
+  | "tanner";
 ```
 
 ---
@@ -57,14 +63,16 @@ export type Role =
 export type CenterIndex = 0 | 1 | 2;
 ```
 
-### Night Order (v1)
+### Night Order (documented)
 ```ts
 export const NIGHT_ORDER: Role[] = [
+  "doppleganger",
   "werewolf",
   "minion",
   "mason",
   "seer",
   "robber",
+  "drunk",
   "troublemaker",
   "insomniac",
 ];
@@ -73,6 +81,11 @@ export const NIGHT_ORDER: Role[] = [
 ### Eligibility Rules (night actions)
 - A player's eligibility to act for a night step is based on `originalRoles[playerId]`.
 - Example: if someone is originally the robber, they act during the robber step even if later swapped.
+
+### Role Behavior Notes (Expanded Roles)
+- **Doppleganger**: acts first. Chooses a player to copy. The doppleganger becomes that role for the rest of the game. If the copied role has a night action, it resolves immediately during the doppleganger step **except** for insomniac: a doppleganger-insomniac acts at the end of night, after the real insomniac.
+- **Drunk**: chooses a center card index and swaps without seeing the new role. No private reveal is provided.
+- **Tanner**: has no night action. Wins if eliminated during reveal, regardless of other winners.
 
 ---
 
@@ -118,9 +131,10 @@ export type GameSettings = {
 
   // suspicion tokens
   tokensEnabled: boolean;          // default true
-  tokensPerPlayerLimit: number;    // default 3
-  autoAdvanceNight: boolean;       // default true
+  // token pool is derived from role counts (one token per role in the game)
+  autoAdvanceNight: boolean;       // default true (legacy: controls night step auto-advance)
   parallelNight: boolean;          // default false
+  nightAdvanceMode?: "host" | "auto"; // preferred: applies to both sequential + parallel
 };
 ```
 
@@ -143,17 +157,19 @@ export type RoleSelection = {
 
 Representation:
 - `tokensByPlayer[ownerId][targetId] = count`
+- `tokenPoolByRole[role] = count` (one token per role in the game)
 
 ```ts
 export type TokensState = {
   tokensByPlayer: Record<string, Record<string, number>>;
+  tokenPoolByRole: Record<Role, number>;
 };
 ```
 
 Constraints:
 - Only valid during `discussion` (optionally allowed during `voting` if you want).
 - Owner cannot target self.
-- Total tokens placed by an owner ≤ `settings.tokensPerPlayerLimit`.
+- Token pool is derived from the role counts: one token per role in the game (e.g., 3 villagers → 3 villager tokens).
 
 Derived helpers:
 - `totalUsedBy(ownerId) = sum(tokensByPlayer[ownerId][*])`
@@ -216,12 +232,14 @@ Log entries should not leak private info in real-time. If enabled, store for rev
 
 ```ts
 export type NightActionLogEntry =
+  | { kind: "dopplegangerCopiedRole"; playerId: string; role: Role }
   | { kind: "minionSawWerewolves"; playerId: string; saw: string[] }
   | { kind: "werewolfSawWerewolves"; playerId: string; saw: string[] }
   | { kind: "werewolfSoloPeek"; playerId: string; centerIndex: CenterIndex; role: Role }
   | { kind: "seerViewPlayer"; playerId: string; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; playerId: string; center: Array<{ centerIndex: CenterIndex; role: Role }> }
   | { kind: "robberSwap"; playerId: string; targetPlayerId: string; newRole: Role }
+  | { kind: "drunkSwap"; playerId: string; centerIndex: CenterIndex }
   | { kind: "troublemakerSwap"; playerId: string; targets: [string, string] }
   | { kind: "insomniacPeek"; playerId: string; finalRole: Role };
 ```
@@ -253,7 +271,7 @@ Reveal computes:
 - winners
 
 ```ts
-export type Winners = "village" | "werewolves";
+export type Winners = "village" | "werewolves" | "tanner";
 
 export type RevealState = {
   // computed and then persisted during reveal phase
@@ -268,6 +286,12 @@ export type RevealState = {
   // optional action log
   actionLog?: NightActionLogEntry[];
 };
+
+### Win Logic (with Tanner)
+- If any eliminated player has role `tanner`, winners = `"tanner"` (tanner wins alone).
+- Otherwise:
+  - Village wins if at least one werewolf is eliminated.
+  - Werewolf team wins otherwise (werewolves + minion).
 ```
 
 ### Tie Handling (v1 recommendation)
@@ -344,6 +368,7 @@ Use a separate object for private results:
 export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: Role }
+  | { kind: "dopplegangerCopiedRole"; role: Role }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
@@ -352,6 +377,7 @@ export type PrivateView =
   | { kind: "seerViewPlayer"; targetPlayerId: string; role: Role }
   | { kind: "seerViewCenter"; center: Array<{ centerIndex: CenterIndex; role: Role }> }
   | { kind: "robberNewRole"; role: Role }
+  | { kind: "drunkSwapped"; centerIndex: CenterIndex }
   | { kind: "insomniacFinalRole"; role: Role };
 ```
 

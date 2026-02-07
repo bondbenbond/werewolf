@@ -13,8 +13,8 @@ Core constraints:
 Tech:
 - Monorepo
 - apps/web: Vite + React + TypeScript
-- apps/server: Node + TypeScript + Socket.IO
-- packages/shared: shared types (Phase, Role, GameState, Socket payload types)
+- apps/server: Node + TypeScript + REST + SSE
+- packages/shared: shared types (Phase, Role, GameState, REST/SSE payload types)
 
 Docs (source of truth):
 - docs/01-wireframes.md
@@ -22,6 +22,7 @@ Docs (source of truth):
 - docs/03-architecture.md
 - docs/04-socket-events.md
 - docs/05-game-state.md
+- docs/06-rest-sse-api.md
 
 Implementation rules:
 - Never trust client state; only accept intent.
