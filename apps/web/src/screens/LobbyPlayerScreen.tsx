@@ -32,6 +32,8 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
   const isReady = currentPlayer?.ready ?? false;
   const shareUrl = data.shareUrl || `${window.location.origin}/?game=${data.roomCode}`;
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+  const [readyLoading, setReadyLoading] = useState(false);
+  const [leaveLoading, setLeaveLoading] = useState(false);
   const copyLink = () => {
     try {
       if (navigator.clipboard?.writeText) {
@@ -126,10 +128,36 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
             ))}
           </div>
           <div className="player-ready-cta">
-            <Button variant="success" onClick={() => onSetReady?.(!isReady)} disabled={!onSetReady}>
+            <Button
+              variant="success"
+              loading={readyLoading}
+              onClick={async () => {
+                if (!onSetReady || readyLoading) return;
+                setReadyLoading(true);
+                try {
+                  await Promise.resolve(onSetReady(!isReady));
+                } finally {
+                  setReadyLoading(false);
+                }
+              }}
+              disabled={!onSetReady}
+            >
               {isReady ? "Unready" : "Ready"}
             </Button>
-            <Button variant="ghost" onClick={() => onLeave?.()} disabled={!onLeave}>
+            <Button
+              variant="ghost"
+              loading={leaveLoading}
+              onClick={async () => {
+                if (!onLeave || leaveLoading) return;
+                setLeaveLoading(true);
+                try {
+                  await Promise.resolve(onLeave());
+                } finally {
+                  setLeaveLoading(false);
+                }
+              }}
+              disabled={!onLeave}
+            >
               Leave
             </Button>
           </div>

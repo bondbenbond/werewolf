@@ -118,6 +118,15 @@ const emitPrivate = (record: GameRecord, playerId: string, type: string, payload
 };
 
 const buildPublicState = (state: GameState): PublicGameState => {
+  const nightStepRoles = NIGHT_ORDER.filter((role) => state.roleSelection.roles.includes(role));
+  const currentNightIndex =
+    state.night?.stepRole !== null && state.night?.stepRole !== undefined
+      ? nightStepRoles.indexOf(state.night.stepRole)
+      : -1;
+  const nextStepRole =
+    currentNightIndex >= 0 && currentNightIndex + 1 < nightStepRoles.length
+      ? nightStepRoles[currentNightIndex + 1]
+      : null;
   const players = state.playerOrder.map((playerId) => {
     const player = state.playersById[playerId];
     return {
@@ -142,6 +151,7 @@ const buildPublicState = (state: GameState): PublicGameState => {
     night: state.night
       ? {
           stepRole: state.night.stepRole,
+          nextStepRole,
           completedThisStep: state.night.completionByPlayer,
           stepIndex: state.night.stepIndex,
           totalSteps: state.night.totalSteps,
@@ -435,6 +445,7 @@ const startNight = (record: GameRecord) => {
       clearParallelNightTimer(record);
       record.parallelNightTimer = setTimeout(() => {
         advanceNightStep(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
       }, 10_000);
     }
     // Info-only roles get their info immediately in parallel mode.
@@ -476,6 +487,7 @@ const startNight = (record: GameRecord) => {
   }
   record.state.phase = "night";
   record.state.phaseEndsAt = undefined;
+  record.state.updatedAt = Date.now();
 };
 
 const advanceNightStep = (record: GameRecord) => {
@@ -489,8 +501,11 @@ const advanceNightStep = (record: GameRecord) => {
       record.parallelResultTimer = setTimeout(() => {
         record.state.phase = "discussion";
         record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+        record.state.updatedAt = Date.now();
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
       }, 10_000);
     }
+    record.state.updatedAt = Date.now();
     return;
   }
 
@@ -499,6 +514,7 @@ const advanceNightStep = (record: GameRecord) => {
     record.state.phase = "discussion";
     record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
     record.state.night = undefined;
+    record.state.updatedAt = Date.now();
     return;
   }
 
@@ -540,6 +556,7 @@ const advanceNightStep = (record: GameRecord) => {
       });
     });
   }
+  record.state.updatedAt = Date.now();
 };
 
 const validateNightAction = (
@@ -928,7 +945,9 @@ app.post(
     record.state.phase = "nightCountdown";
     record.state.phaseEndsAt = Date.now() + 3000;
     setTimeout(() => {
+      if (record.state.phase !== "nightCountdown") return;
       startNight(record);
+      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
     }, 3000);
     record.state.updatedAt = Date.now();
   }
@@ -1137,7 +1156,7 @@ app.post(
     record.state.tokens = resetTokens(record.state.roleSelection.roles);
     record.state.playerOrder.forEach((id) => {
       const player = record.state.playersById[id];
-      if (player) player.ready = false;
+      if (player) player.ready = id === record.state.hostPlayerId;
     });
     record.state.updatedAt = Date.now();
   }

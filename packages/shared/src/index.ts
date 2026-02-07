@@ -164,6 +164,7 @@ export type PublicPlayer = {
 
 export type PublicNightState = {
   stepRole: Role | null;
+  nextStepRole?: Role | null;
   completedThisStep: Record<string, boolean>;
   stepIndex: number;
   totalSteps: number;

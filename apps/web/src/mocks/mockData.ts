@@ -72,7 +72,7 @@ export const mockData = {
       return {
         id: `card-${idx + 1}`,
         label: isCenter ? `Center ${idx + 1}` : playerIndex === 1 ? "Ben" : `Player ${playerIndex}`,
-        type: isCenter ? "center" : "player",
+        type: isCenter ? ("center" as const) : ("player" as const),
       };
     }),
   },

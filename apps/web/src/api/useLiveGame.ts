@@ -34,6 +34,7 @@ export type PublicGameState = {
   dealAcks?: Record<string, boolean>;
   night?: {
     stepRole: string | null;
+    nextStepRole?: string | null;
     completedThisStep: Record<string, boolean>;
     stepIndex: number;
     totalSteps: number;

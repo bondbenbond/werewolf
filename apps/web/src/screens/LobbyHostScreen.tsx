@@ -46,6 +46,8 @@ export function LobbyHostScreen({
   const [savedSettings, setSavedSettings] = useState(data.settings);
   const [settings, setSettings] = useState(data.settings);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+  const [startLoading, setStartLoading] = useState(false);
+  const [endLoading, setEndLoading] = useState(false);
   const [roleCounts, setRoleCounts] = useState<Record<string, number>>(
     Object.fromEntries(data.roles.map((role) => [role.name, role.count]))
   );
@@ -238,12 +240,34 @@ export function LobbyHostScreen({
       <div className="cta-row">
         <Button
           variant="success"
+          loading={startLoading}
           disabled={!rolesComplete || !onStartGame}
-          onClick={() => onStartGame?.()}
+          onClick={async () => {
+            if (!onStartGame || startLoading) return;
+            setStartLoading(true);
+            try {
+              await Promise.resolve(onStartGame());
+            } finally {
+              setStartLoading(false);
+            }
+          }}
         >
           Start game
         </Button>
-        <Button variant="ghost" onClick={() => onEndGame?.()} disabled={!onEndGame}>
+        <Button
+          variant="ghost"
+          loading={endLoading}
+          onClick={async () => {
+            if (!onEndGame || endLoading) return;
+            setEndLoading(true);
+            try {
+              await Promise.resolve(onEndGame());
+            } finally {
+              setEndLoading(false);
+            }
+          }}
+          disabled={!onEndGame}
+        >
           End game
         </Button>
       </div>

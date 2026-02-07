@@ -1,8 +1,9 @@
 import { Button } from "../components/Button";
 import { GameBoardScreen, type GameBoardData } from "./GameBoardScreen";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Phase = "deal" | "nightCountdown" | "night" | "discussion" | "voting" | "reveal";
+type ActionState = "idle" | "selecting" | "confirmed";
 
 export type GameScreenData = {
   board: GameBoardData;
@@ -10,11 +11,17 @@ export type GameScreenData = {
   phaseTimer?: string;
   night: {
     step: string;
+    nextStep?: string | null;
     instruction: string;
     remaining: string;
+    secondsRemaining?: number | null;
     role?: string;
     roleInstruction?: string;
     waiting?: boolean;
+    selectableCardIds?: string[];
+    blinkCardIds?: string[];
+    revealedRolesByCardId?: Record<string, string>;
+    cardAnnotationsByCardId?: Record<string, string>;
   };
   discussion: { timer: string };
   voting: { timer: string };
@@ -31,8 +38,8 @@ export function GameScreen({
   onStartNight,
   onAdvanceNightStep,
   onStartVoting,
-  onLockVotes,
   onRevealResults,
+  onEndGame,
   onPlaceToken,
   onSubmitVote,
   onNightAction,
@@ -46,8 +53,8 @@ export function GameScreen({
   onStartNight?: () => void;
   onAdvanceNightStep?: () => void;
   onStartVoting?: () => void;
-  onLockVotes?: () => void;
   onRevealResults?: () => void;
+  onEndGame?: () => void;
   onPlaceToken?: (targetId: string, role: string | null) => void;
   onSubmitVote?: (targetPlayerId: string) => void;
   onNightAction?: (payload: Record<string, unknown>) => void;
@@ -56,8 +63,6 @@ export function GameScreen({
     data.phase === "nightCountdown"
       ? "Night"
       : data.phase.charAt(0).toUpperCase() + data.phase.slice(1);
-  const [nightModalOpen, setNightModalOpen] = useState(false);
-  const [nightActionStarted, setNightActionStarted] = useState(false);
   const [dealAcknowledged, setDealAcknowledged] = useState(false);
   const [phaseRemaining, setPhaseRemaining] = useState<number | null>(null);
   const [discussionMenuCardId, setDiscussionMenuCardId] = useState<string | null>(null);
@@ -68,6 +73,9 @@ export function GameScreen({
     players: [],
     centers: [],
   });
+  const [nightActionState, setNightActionState] = useState<ActionState>("idle");
+  const [hostNextLoading, setHostNextLoading] = useState(false);
+  const [hostEndLoading, setHostEndLoading] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{
     placement: "top" | "bottom";
     align: "left" | "center" | "right";
@@ -85,18 +93,6 @@ export function GameScreen({
     "Tanner",
     "Villager",
   ];
-
-  useEffect(() => {
-    if (data.phase === "night") {
-      setNightActionStarted(false);
-      setNightModalOpen(!data.night.waiting);
-      setNightSelections({ players: [], centers: [] });
-      return;
-    }
-    setNightActionStarted(false);
-    setNightModalOpen(false);
-    setNightSelections({ players: [], centers: [] });
-  }, [data.phase, data.night.waiting, data.night.step, data.night.role]);
 
   useEffect(() => {
     if (data.phase !== "deal") {
@@ -146,50 +142,104 @@ export function GameScreen({
     return () => window.clearInterval(timer);
   }, [data.board.phaseEndsAt]);
 
-  const normalizeRoleKey = (label?: string | null) => (label ? label.toLowerCase() : "");
-
-  const handleNightCardAction = (cardId: string) => {
-    if (!onNightAction || !nightActionStarted) return;
-    const roleKey = normalizeRoleKey(data.night.role);
-    const card = data.board.cards.find((item) => item.id === cardId);
-    if (!card) return;
-    if (roleKey === "doppleganger" && card.type === "player") {
-      onNightAction({ kind: "dopplegangerCopy", targetPlayerId: cardId });
+  useEffect(() => {
+    if (data.phase !== "night") {
+      setNightSelections({ players: [], centers: [] });
+      setNightActionState("idle");
       return;
     }
+    setNightSelections({ players: [], centers: [] });
+    setNightActionState("idle");
+  }, [data.phase, data.night.step, data.night.role, data.night.waiting]);
+
+  const normalizeRoleKey = (label?: string | null) => (label ? label.toLowerCase() : "");
+
+  const roleKey = normalizeRoleKey(data.night.role);
+
+  const computedSelectable = useMemo(() => {
+    if (data.phase !== "night" || data.night.waiting || nightActionState !== "selecting") return [] as string[];
+    if (roleKey === "seer") {
+      if (nightSelections.centers.length > 0) {
+        return data.board.cards
+          .filter((card) => card.type === "center")
+          .map((card) => card.id)
+          .filter((cardId) => !nightSelections.centers.includes(Number(cardId.replace("center-", ""))));
+      }
+      return data.board.cards.filter((card) => card.type === "center" || card.type === "player").map((c) => c.id);
+    }
+    if (roleKey === "robber") {
+      return data.board.cards
+        .filter((card) => card.type === "player" && card.id !== data.board.playerId)
+        .map((card) => card.id);
+    }
+    if (roleKey === "troublemaker") {
+      return data.board.cards
+        .filter(
+          (card) => card.type === "player" && card.id !== data.board.playerId && !nightSelections.players.includes(card.id)
+        )
+        .map((card) => card.id);
+    }
+    if (roleKey === "drunk") {
+      return data.board.cards.filter((card) => card.type === "center").map((card) => card.id);
+    }
+    if (roleKey === "werewolf") {
+      return data.night.selectableCardIds ?? [];
+    }
+    return [];
+  }, [data, nightActionState, nightSelections, roleKey]);
+
+  const selectedCardIds = [
+    ...nightSelections.players,
+    ...nightSelections.centers.map((centerIndex) => `center-${centerIndex}`),
+  ];
+
+  const handleNightCardAction = (cardId: string) => {
+    if (!onNightAction || data.phase !== "night" || data.night.waiting || nightActionState !== "selecting") return;
+    const card = data.board.cards.find((item) => item.id === cardId);
+    if (!card) return;
+    if (!computedSelectable.includes(cardId)) return;
+
     if (roleKey === "werewolf" && card.type === "center") {
       const centerIndex = Number(cardId.replace("center-", ""));
       if (!Number.isNaN(centerIndex)) {
         onNightAction({ kind: "werewolfSoloPeek", centerIndex });
+        setNightActionState("confirmed");
       }
       return;
     }
     if (roleKey === "seer") {
       if (card.type === "player") {
         onNightAction({ kind: "seerViewPlayer", targetPlayerId: cardId });
+        setNightSelections({ players: [cardId], centers: [] });
+        setNightActionState("confirmed");
         return;
       }
       if (card.type === "center") {
         const centerIndex = Number(cardId.replace("center-", ""));
         if (Number.isNaN(centerIndex)) return;
-        const nextCenters = [...nightSelections.centers, centerIndex];
+        const nextCenters = [...nightSelections.centers, centerIndex].slice(0, 2);
         if (nextCenters.length >= 2) {
           onNightAction({ kind: "seerViewCenter", centerIndices: [nextCenters[0], nextCenters[1]] });
-          setNightSelections({ players: [], centers: [] });
+          setNightSelections({ players: [], centers: nextCenters });
+          setNightActionState("confirmed");
         } else {
-          setNightSelections((prev) => ({ ...prev, centers: nextCenters }));
+          setNightSelections({ players: [], centers: nextCenters });
         }
         return;
       }
     }
     if (roleKey === "robber" && card.type === "player") {
       onNightAction({ kind: "robberSwap", targetPlayerId: cardId });
+      setNightSelections({ players: [cardId], centers: [] });
+      setNightActionState("confirmed");
       return;
     }
     if (roleKey === "drunk" && card.type === "center") {
       const centerIndex = Number(cardId.replace("center-", ""));
       if (!Number.isNaN(centerIndex)) {
         onNightAction({ kind: "drunkSwap", centerIndex });
+        setNightSelections({ players: [], centers: [centerIndex] });
+        setNightActionState("confirmed");
       }
       return;
     }
@@ -197,20 +247,43 @@ export function GameScreen({
       const nextPlayers = [...nightSelections.players, cardId].slice(0, 2);
       if (nextPlayers.length >= 2) {
         onNightAction({ kind: "troublemakerSwap", targetPlayerIds: [nextPlayers[0], nextPlayers[1]] });
-        setNightSelections({ players: [], centers: [] });
+        setNightSelections({ players: nextPlayers, centers: [] });
+        setNightActionState("confirmed");
       } else {
         setNightSelections((prev) => ({ ...prev, players: nextPlayers }));
       }
-      return;
-    }
-    if (roleKey === "insomniac") {
-      onNightAction({ kind: "insomniacPeek" });
     }
   };
 
   const dealCountdown = data.phase === "deal" ? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null : null;
   const showRoleModal =
     data.phase === "deal" && (dealCountdown === null || dealCountdown <= 0) && !dealAcknowledged;
+  const nightCountdown =
+    data.phase === "night"
+      ? data.night.secondsRemaining ?? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null
+      : null;
+  const roleNeedsSelection = ["werewolf", "seer", "robber", "troublemaker", "drunk"].includes(roleKey);
+  const showNightWaitingModal = data.phase === "night" && !!data.night.waiting;
+  const showNightStartModal =
+    data.phase === "night" && !data.night.waiting && roleNeedsSelection && nightActionState === "idle";
+  const hostNextAction = useMemo(() => {
+    if (data.phase === "deal") {
+      return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
+    }
+    if (data.phase === "night") {
+      return { label: "Next role", onClick: onAdvanceNightStep, disabled: !onAdvanceNightStep };
+    }
+    if (data.phase === "discussion") {
+      return { label: "Start voting", onClick: onStartVoting, disabled: !onStartVoting };
+    }
+    if (data.phase === "voting") {
+      return { label: "Reveal results", onClick: onRevealResults, disabled: !onRevealResults };
+    }
+    if (data.phase === "reveal") {
+      return { label: "Back to lobby", onClick: onEndGame, disabled: !onEndGame };
+    }
+    return { label: "Next", onClick: undefined, disabled: true };
+  }, [data.phase, onAdvanceNightStep, onEndGame, onRevealResults, onStartNight, onStartVoting]);
 
   return (
     <div className="game-shell">
@@ -223,6 +296,11 @@ export function GameScreen({
         initialRoleModal={data.phase === "deal"}
         showRoleModalOverride={showRoleModal}
         showHostBar={false}
+        selectableCardIds={computedSelectable}
+        selectedCardIds={selectedCardIds}
+        blinkCardIds={data.night.blinkCardIds}
+        revealedRoleByCardId={data.night.revealedRolesByCardId}
+        cardNoteById={data.night.cardAnnotationsByCardId}
         cardTokenById={
           data.phase === "discussion"
             ? interactive
@@ -241,7 +319,7 @@ export function GameScreen({
           onAckRole?.();
         }}
         onCardClick={
-          data.phase === "night" && onNightAction && nightActionStarted
+          data.phase === "night" && onNightAction
             ? (cardId) => {
                 handleNightCardAction(cardId);
               }
@@ -258,21 +336,21 @@ export function GameScreen({
                 setDiscussionMenuCardId(cardId);
               }
             : data.phase === "voting" && votingReady && (interactive || onSubmitVote)
-              ? (cardId, _rect) => {
-                  const cardType = data.board.cards.find((card) => card.id === cardId)?.type;
-                  if (cardType !== "player") {
-                    return;
-                  }
-                  if (onSubmitVote) {
-                    onSubmitVote(cardId);
-                  } else {
-                    setVoteCounts((prev) => ({
-                      ...prev,
-                      [cardId]: (prev[cardId] ?? 0) + 1,
-                    }));
-                  }
+            ? (cardId, _rect) => {
+                const cardType = data.board.cards.find((card) => card.id === cardId)?.type;
+                if (cardType !== "player") {
+                  return;
                 }
-              : undefined
+                if (onSubmitVote) {
+                  onSubmitVote(cardId);
+                } else {
+                  setVoteCounts((prev) => ({
+                    ...prev,
+                    [cardId]: (prev[cardId] ?? 0) + 1,
+                  }));
+                }
+              }
+            : undefined
         }
         onCardMenuSelect={
           data.phase === "discussion" && (interactive || onPlaceToken)
@@ -312,50 +390,41 @@ export function GameScreen({
       ) : null}
 
       {data.phase === "night" ? (
-        <>
-          {data.night.waiting ? (
-            <div className="overlay">
-              <div className="overlay-card action-card">
-                <p className="eyebrow">Night in progress</p>
-                <h3>Waiting for your turn</h3>
-                <p className="lede">Current step: {data.night.step}</p>
-                <p className="lede">Up next: {data.night.role ?? data.night.step}</p>
-                <p className="lede">{data.night.remaining}</p>
-              </div>
-            </div>
-          ) : nightModalOpen ? (
-            <div className="overlay">
-              <div className="overlay-card action-card">
-                <p className="eyebrow">Your action</p>
-                <h3>{data.night.role ?? data.night.step}</h3>
-                <p className="lede">{data.night.roleInstruction ?? data.night.instruction}</p>
-                <Button
-                  variant="success"
-                  onClick={() => {
-                    setNightModalOpen(false);
-                    setNightActionStarted(true);
-                    if (onNightAction) {
-                      const roleKey = normalizeRoleKey(data.night.role);
-                      if (["villager", "minion", "mason", "tanner", "werewolf"].includes(roleKey)) {
-                        onNightAction({ kind: "done" });
-                      }
-                      if (roleKey === "insomniac") {
-                        onNightAction({ kind: "insomniacPeek" });
-                      }
-                    }
-                  }}
-                >
-                  Start action
-                </Button>
-              </div>
-            </div>
-          ) : null}
-          {nightActionStarted ? (
-            <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
-              <span>{data.night.roleInstruction ?? data.night.instruction}</span>
-            </div>
-          ) : null}
-        </>
+        <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
+          <span>
+            {data.night.waiting
+              ? `Waiting · ${data.night.step}`
+              : nightActionState === "confirmed"
+              ? `Action confirmed · ${data.night.roleInstruction ?? data.night.instruction}`
+              : data.night.roleInstruction ?? data.night.instruction}
+            {nightCountdown !== null ? ` · ${nightCountdown}s` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {showNightStartModal ? (
+        <div className="overlay">
+          <div className="overlay-card action-card">
+            <p className="eyebrow">Your action</p>
+            <h3>{data.night.role ?? "Role action"}</h3>
+            <p className="lede">{data.night.roleInstruction ?? data.night.instruction}</p>
+            <Button variant="success" onClick={() => setNightActionState("selecting")}>
+              Start action
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showNightWaitingModal ? (
+        <div className="overlay">
+          <div className="overlay-card action-card">
+            <p className="eyebrow">Waiting</p>
+            <h3>Waiting for your turn</h3>
+            <p className="lede">Current role: {data.night.step}</p>
+            <p className="lede">Next role: {data.night.nextStep ?? "Discussion"}</p>
+            <p className="lede">{nightCountdown !== null ? `Time left: ${nightCountdown}s` : data.night.remaining}</p>
+          </div>
+        </div>
       ) : null}
 
       {data.phase === "discussion" ? (
@@ -371,11 +440,11 @@ export function GameScreen({
           </div>
         ) : (
           <div className="overlay">
-          <div className="overlay-card action-card">
-            <p className="eyebrow">Voting</p>
-            <h3>Cast your vote</h3>
-            <p className="lede">Starting in 2 seconds…</p>
-          </div>
+            <div className="overlay-card action-card">
+              <p className="eyebrow">Voting</p>
+              <h3>Cast your vote</h3>
+              <p className="lede">Starting in 2 seconds…</p>
+            </div>
           </div>
         )
       ) : null}
@@ -395,36 +464,36 @@ export function GameScreen({
           <Button
             size="small"
             variant="success"
-            onClick={() => {
-              if (data.phase === "deal") {
-                onStartNight?.();
-                return;
-              }
-              if (data.phase === "night") {
-                onAdvanceNightStep?.();
-                return;
-              }
-              if (data.phase === "discussion") {
-                onStartVoting?.();
-                return;
-              }
-              if (data.phase === "voting") {
-                onLockVotes?.();
+            loading={hostNextLoading}
+            onClick={async () => {
+              if (!hostNextAction.onClick || hostNextLoading) return;
+              setHostNextLoading(true);
+              try {
+                await Promise.resolve(hostNextAction.onClick());
+              } finally {
+                setHostNextLoading(false);
               }
             }}
+            disabled={hostNextAction.disabled}
           >
-            Next step
+            {hostNextAction.label}
           </Button>
           <Button
             size="small"
             variant="ghost"
-            onClick={() => {
-              if (data.phase === "voting") {
-                onRevealResults?.();
+            loading={hostEndLoading}
+            onClick={async () => {
+              if (!onEndGame || hostEndLoading) return;
+              setHostEndLoading(true);
+              try {
+                await Promise.resolve(onEndGame());
+              } finally {
+                setHostEndLoading(false);
               }
             }}
+            disabled={!onEndGame}
           >
-            Next phase
+            End game
           </Button>
         </div>
       ) : null}

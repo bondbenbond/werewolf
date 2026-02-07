@@ -2,12 +2,21 @@ import { useRef, useState } from "react";
 import { useApiEnv } from "../api/ApiContext";
 import { createGame, joinGame } from "../api/client";
 import { persistSession, type SessionInfo } from "../api/session";
+import { Button } from "../components/Button";
 
 type HomeScreenProps = {
   onSession?: (session: SessionInfo) => void;
+  resumeSession?: SessionInfo | null;
+  onResumeSession?: (session: SessionInfo) => void;
+  onDismissResume?: () => void;
 };
 
-export function HomeScreen({ onSession }: HomeScreenProps) {
+export function HomeScreen({
+  onSession,
+  resumeSession,
+  onResumeSession,
+  onDismissResume,
+}: HomeScreenProps) {
   const env = useApiEnv();
   const [playerName, setPlayerName] = useState("");
   const [nameError, setNameError] = useState(false);
@@ -142,6 +151,23 @@ export function HomeScreen({ onSession }: HomeScreenProps) {
         <h2>One Night Ultimate Werewolf</h2>
         <p className="lede">Host in minutes or jump in with a room code.</p>
       </div>
+
+      {resumeSession ? (
+        <div className="glass" style={{ marginBottom: 16 }}>
+          <p className="eyebrow">Resume previous session</p>
+          <p className="lede" style={{ marginTop: 6 }}>
+            Rejoin room {resumeSession.gameId} as {resumeSession.name}.
+          </p>
+          <div className="cta-row" style={{ marginTop: 10 }}>
+            <Button variant="success" onClick={() => onResumeSession?.(resumeSession)}>
+              Resume
+            </Button>
+            <Button variant="ghost" onClick={() => onDismissResume?.()}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="home-global-inputs">
         <div className="field">

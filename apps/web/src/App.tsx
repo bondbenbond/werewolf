@@ -5,12 +5,27 @@ import { loadApiEnv, type ApiEnv } from "./api/env";
 import { Playground } from "./playground/Playground";
 import { HomeScreen } from "./screens/HomeScreen";
 import { JoinGameScreen } from "./screens/JoinGameScreen";
-import { readSession, type SessionInfo } from "./api/session";
+import {
+  clearStoredSession,
+  readSessionFromUrl,
+  readStoredSession,
+  type SessionInfo,
+} from "./api/session";
 
 export default function App() {
+  const url = new URL(window.location.href);
+  const gameFromUrl = url.searchParams.get("game");
+  const devMode = url.searchParams.get("dev") === "1";
+  const urlSession = readSessionFromUrl();
+  const storedSession = readStoredSession();
+  const matchedStoredSession =
+    gameFromUrl && storedSession?.gameId === gameFromUrl ? storedSession : null;
   const [env, setEnv] = useState<ApiEnv | null>(null);
   const [envError, setEnvError] = useState<string | null>(null);
-  const [session, setSession] = useState<SessionInfo | null>(() => readSession());
+  const [session, setSession] = useState<SessionInfo | null>(() => urlSession ?? matchedStoredSession);
+  const [resumeSession, setResumeSession] = useState<SessionInfo | null>(() =>
+    urlSession || gameFromUrl ? null : storedSession
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -42,10 +57,6 @@ export default function App() {
     );
   }
 
-  const url = new URL(window.location.href);
-  const devMode = url.searchParams.get("dev") === "1";
-  const gameFromUrl = url.searchParams.get("game");
-
   return (
     <ApiProvider env={env}>
       {devMode || session ? (
@@ -53,7 +64,18 @@ export default function App() {
       ) : gameFromUrl ? (
         <JoinGameScreen gameId={gameFromUrl} onSession={setSession} />
       ) : (
-        <HomeScreen onSession={setSession} />
+        <HomeScreen
+          onSession={setSession}
+          resumeSession={resumeSession}
+          onResumeSession={(next) => {
+            setSession(next);
+            setResumeSession(null);
+          }}
+          onDismissResume={() => {
+            clearStoredSession();
+            setResumeSession(null);
+          }}
+        />
       )}
     </ApiProvider>
   );

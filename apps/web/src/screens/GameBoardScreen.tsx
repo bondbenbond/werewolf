@@ -1,4 +1,3 @@
-import { CardGrid } from "../components/CardGrid";
 import { Button } from "../components/Button";
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 
@@ -10,6 +9,7 @@ export type GameBoardData = {
   phaseEndsAt?: number | null;
   role: { name: string; description: string };
   playerName: string;
+  playerId?: string;
   cards: Array<{ id: string; label: string; type: "center" | "player" }>;
 };
 
@@ -36,6 +36,11 @@ export const GameBoardScreen = forwardRef<
     cardMenuForId?: string | null;
     cardMenuItems?: string[];
     cardMenuPosition?: { placement: "top" | "bottom"; align: "left" | "center" | "right" };
+    selectableCardIds?: string[];
+    selectedCardIds?: string[];
+    blinkCardIds?: string[];
+    revealedRoleByCardId?: Record<string, string>;
+    cardNoteById?: Record<string, string>;
     onCardMenuSelect?: (cardId: string, role: string | null) => void;
     onCardClick?: (cardId: string, rect: DOMRect) => void;
     onAcknowledge?: () => void;
@@ -52,6 +57,11 @@ export const GameBoardScreen = forwardRef<
     cardMenuForId,
     cardMenuItems,
     cardMenuPosition,
+    selectableCardIds,
+    selectedCardIds,
+    blinkCardIds,
+    revealedRoleByCardId,
+    cardNoteById,
     onCardMenuSelect,
     onCardClick,
     onAcknowledge,
@@ -118,29 +128,87 @@ export const GameBoardScreen = forwardRef<
   };
   const normalizedRole = roleData.name.toLowerCase();
   const roleImage = roleImageMap[normalizedRole] ?? "/assets/cards/card-back.jpg";
-  const actionCopy: Record<string, string> = {
-    werewolf: "Select another werewolf or peek a center card if solo.",
-    minion: "See the werewolves, then acknowledge.",
-    mason: "Find the other mason.",
-    seer: "Peek one player or two center cards.",
-    robber: "Swap with a player and view your new card.",
-    troublemaker: "Swap two other players.",
-    drunk: "Swap with a center card without looking.",
-    insomniac: "Peek your card at end of night.",
-    doppleganger: "Copy another role, then perform that action.",
-    tanner: "Try to get yourself eliminated.",
-    villager: "No action. Keep eyes closed.",
-  };
   const tokenImageFor = (role?: string | null) => {
     if (!role) return null;
     const key = role.toLowerCase();
     return `/assets/icons/${key}.png`;
   };
+  const imageForRole = (role?: string) => {
+    if (!role) return "/assets/cards/card-back.jpg";
+    return roleImageMap[role.toLowerCase()] ?? "/assets/cards/card-back.jpg";
+  };
+  const selectedSet = new Set(selectedCardIds ?? []);
+  const selectableSet = new Set(selectableCardIds ?? []);
+  const blinkSet = new Set(blinkCardIds ?? []);
+
   useEffect(() => {
     if (typeof showRoleModalOverride === "boolean") {
       setShowRoleModal(showRoleModalOverride);
     }
   }, [showRoleModalOverride]);
+
+  const renderCard = (card: { id: string; label: string; type: "center" | "player" }, hideName = false) => {
+    const isSelectable = selectableSet.has(card.id);
+    const isSelected = selectedSet.has(card.id);
+    const isBlinking = blinkSet.has(card.id);
+    const revealedRole = revealedRoleByCardId?.[card.id];
+    const faceImage = cardsFaceUp ? roleImage : imageForRole(revealedRole);
+    const note = cardNoteById?.[card.id];
+    return (
+      <div key={card.id} className="card-stack">
+        <div
+          className={`card ${onCardClick ? "card-clickable" : ""} ${
+            cardTokenById?.[card.id] ? "card-tokened" : ""
+          } ${cardVoteCountById?.[card.id] ? "card-voted" : ""} ${
+            isSelectable ? "card-selectable" : ""
+          } ${isSelected ? "card-selected" : ""} ${isBlinking ? "card-blink" : ""}`}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            onCardClick?.(card.id, rect);
+          }}
+        >
+          <div
+            className={`card-face ${revealedRole || cardsFaceUp ? "up" : "down"}`}
+            style={{
+              backgroundImage: `url(${faceImage})`,
+            }}
+          />
+          {cardTokenById?.[card.id] ? (
+            <img className="card-token" src={tokenImageFor(cardTokenById[card.id]) ?? ""} alt="" />
+          ) : null}
+          {cardVoteCountById?.[card.id] ? (
+            <div className="card-vote-count" aria-live="polite">
+              {cardVoteCountById[card.id]}
+            </div>
+          ) : null}
+        </div>
+        <span className={`card-name ${hideName ? "center-name" : ""}`} aria-hidden={hideName || undefined}>
+          {!hideName ? (
+            <>
+              {card.label}
+              {card.label === data.playerName ? <span className="you-badge">You</span> : null}
+            </>
+          ) : null}
+        </span>
+        {note ? <span className="card-note">{note}</span> : null}
+        {cardMenuForId === card.id && cardMenuItems && cardMenuPosition ? (
+          <div
+            className={`card-menu card-menu-${cardMenuPosition.placement} card-menu-${cardMenuPosition.align}`}
+            role="menu"
+          >
+            <button type="button" onClick={() => onCardMenuSelect?.(card.id, null)}>
+              Clear
+            </button>
+            {cardMenuItems.map((role) => (
+              <button key={role} type="button" onClick={() => onCardMenuSelect?.(card.id, role)}>
+                {role}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="board-shell">
@@ -164,56 +232,7 @@ export const GameBoardScreen = forwardRef<
           <div className="center-block">
             <div className="center-label">Center Cards</div>
             <div className="center-row">
-              {data.cards
-                .filter((card) => card.type === "center")
-                .map((card) => (
-                  <div key={card.id} className="card-stack">
-                    <div
-                      className={`card ${onCardClick ? "card-clickable" : ""} ${
-                        cardTokenById?.[card.id] ? "card-tokened" : ""
-                      } ${cardVoteCountById?.[card.id] ? "card-voted" : ""}`}
-                      onClick={(event) => {
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        onCardClick?.(card.id, rect);
-                      }}
-                    >
-                      <div
-                        className={`card-face ${cardsFaceUp ? "up" : "down"}`}
-                        style={{
-                          backgroundImage: cardsFaceUp ? `url(${roleImage})` : "url(/assets/cards/card-back.jpg)",
-                        }}
-                      />
-                      {cardTokenById?.[card.id] ? (
-                        <img
-                          className="card-token"
-                          src={tokenImageFor(cardTokenById[card.id]) ?? ""}
-                          alt=""
-                        />
-                      ) : null}
-                      {cardVoteCountById?.[card.id] ? (
-                        <div className="card-vote-count" aria-live="polite">
-                          {cardVoteCountById[card.id]}
-                        </div>
-                      ) : null}
-                    </div>
-                    <span className="card-name center-name" aria-hidden="true" />
-                    {cardMenuForId === card.id && cardMenuItems && cardMenuPosition ? (
-                      <div
-                        className={`card-menu card-menu-${cardMenuPosition.placement} card-menu-${cardMenuPosition.align}`}
-                        role="menu"
-                      >
-                        <button type="button" onClick={() => onCardMenuSelect?.(card.id, null)}>
-                          Clear
-                        </button>
-                        {cardMenuItems.map((role) => (
-                          <button key={role} type="button" onClick={() => onCardMenuSelect?.(card.id, role)}>
-                            {role}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
+              {data.cards.filter((card) => card.type === "center").map((card) => renderCard(card, true))}
             </div>
           </div>
           <div className="player-block">
@@ -222,57 +241,7 @@ export const GameBoardScreen = forwardRef<
               {data.cards
                 .filter((card) => card.type === "player")
                 .slice(0, playerCount)
-                .map((card) => (
-                  <div key={card.id} className="card-stack">
-                    <div
-                      className={`card ${onCardClick ? "card-clickable" : ""} ${
-                        cardTokenById?.[card.id] ? "card-tokened" : ""
-                      } ${cardVoteCountById?.[card.id] ? "card-voted" : ""}`}
-                      onClick={(event) => {
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        onCardClick?.(card.id, rect);
-                      }}
-                    >
-                      <div
-                        className={`card-face ${cardsFaceUp ? "up" : "down"}`}
-                        style={{
-                          backgroundImage: cardsFaceUp ? `url(${roleImage})` : "url(/assets/cards/card-back.jpg)",
-                        }}
-                      />
-                      {cardTokenById?.[card.id] ? (
-                        <img
-                          className="card-token"
-                          src={tokenImageFor(cardTokenById[card.id]) ?? ""}
-                          alt=""
-                        />
-                      ) : null}
-                      {cardVoteCountById?.[card.id] ? (
-                        <div className="card-vote-count" aria-live="polite">
-                          {cardVoteCountById[card.id]}
-                        </div>
-                      ) : null}
-                    </div>
-                    <span className="card-name">
-                      {card.label}
-                      {card.label === data.playerName ? <span className="you-badge">You</span> : null}
-                    </span>
-                    {cardMenuForId === card.id && cardMenuItems && cardMenuPosition ? (
-                      <div
-                        className={`card-menu card-menu-${cardMenuPosition.placement} card-menu-${cardMenuPosition.align}`}
-                        role="menu"
-                      >
-                        <button type="button" onClick={() => onCardMenuSelect?.(card.id, null)}>
-                          Clear
-                        </button>
-                        {cardMenuItems.map((role) => (
-                          <button key={role} type="button" onClick={() => onCardMenuSelect?.(card.id, role)}>
-                            {role}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
+                .map((card) => renderCard(card))}
             </div>
           </div>
         </div>
@@ -300,17 +269,6 @@ export const GameBoardScreen = forwardRef<
                 <img src={roleImage} alt={`${roleData.name} card art`} />
               </div>
             </div>
-          </div>
-        </div>
-      ) : null}
-
-      {!showRoleModal && false ? (
-        <div className="overlay action-overlay">
-          <div className="overlay-card action-card">
-            <p className="eyebrow">Action preview</p>
-            <h3>{roleData.name}</h3>
-            <p className="lede">{actionCopy[normalizedRole] ?? "No action."}</p>
-            <Button variant="success">Simulate action</Button>
           </div>
         </div>
       ) : null}

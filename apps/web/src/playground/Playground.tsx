@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HomeScreen } from "../screens/HomeScreen";
 import { LobbyHostScreen } from "../screens/LobbyHostScreen";
 import { LobbyPlayerScreen } from "../screens/LobbyPlayerScreen";
@@ -39,6 +39,7 @@ export function Playground() {
   const [liveGameId, setLiveGameId] = useState(initialSession?.gameId ?? "");
   const [livePlayerId, setLivePlayerId] = useState(initialSession?.playerId ?? "");
   const [liveSecret, setLiveSecret] = useState(initialSession?.secret ?? "");
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [commandError, setCommandError] = useState<string | null>(null);
   const env = useApiEnv();
   const live = useLiveGame({
@@ -52,7 +53,7 @@ export function Playground() {
   const liveGame = liveState ? mapGameData(liveState, live.snapshot?.private, livePlayerId.trim()) : null;
   const livePhase = liveState?.phase ?? null;
   const livePhaseRemaining = liveState?.phaseEndsAt
-    ? Math.max(0, Math.ceil((liveState.phaseEndsAt - Date.now()) / 1000))
+    ? Math.max(0, Math.ceil((liveState.phaseEndsAt - nowMs) / 1000))
     : null;
   const effectiveIsHost =
     useLive && liveState ? liveState.hostPlayerId === livePlayerId.trim() : hostView;
@@ -73,6 +74,14 @@ export function Playground() {
     setLivePlayerId(session.playerId);
     setLiveSecret(session.secret);
   };
+
+  useEffect(() => {
+    if (!useLive || !liveState?.phaseEndsAt) return undefined;
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [liveState?.phaseEndsAt, useLive]);
 
   const sendLiveCommand = async (command: { type: string; payload?: Record<string, unknown> }) => {
     if (!useLive || !liveGameId || !livePlayerId || !liveSecret) return;
@@ -481,10 +490,8 @@ export function Playground() {
             liveGame ? () => sendLiveCommand({ type: "ADVANCE_NIGHT_STEP" }) : undefined
           }
           onStartVoting={liveGame ? () => sendLiveCommand({ type: "START_VOTING" }) : undefined}
-          onLockVotes={
-            liveGame ? () => sendLiveCommand({ type: "LOCK_VOTES", payload: { locked: true } }) : undefined
-          }
           onRevealResults={liveGame ? () => sendLiveCommand({ type: "REVEAL_RESULTS" }) : undefined}
+          onEndGame={liveGame ? () => sendLiveCommand({ type: "RESET_GAME" }) : undefined}
           onSubmitVote={
             liveGame ? (targetPlayerId) => sendLiveCommand({ type: "SUBMIT_VOTE", payload: { targetPlayerId } }) : undefined
           }

@@ -25,6 +25,7 @@ type GameBoardData = {
   phaseEndsAt?: number | null;
   role: { name: string; description: string };
   playerName: string;
+  playerId?: string;
   cards: Array<{ id: string; label: string; type: "center" | "player" }>;
 };
 
@@ -34,11 +35,17 @@ type GameScreenData = {
   phaseTimer?: string;
   night: {
     step: string;
+    nextStep?: string | null;
     instruction: string;
     remaining: string;
+    secondsRemaining?: number | null;
     role?: string;
     roleInstruction?: string;
     waiting?: boolean;
+    selectableCardIds?: string[];
+    blinkCardIds?: string[];
+    revealedRolesByCardId?: Record<string, string>;
+    cardAnnotationsByCardId?: Record<string, string>;
   };
   discussion: { timer: string };
   voting: { timer: string };
@@ -233,12 +240,50 @@ export const mapGameData = (
     : 0;
   const total = state.night ? Object.keys(state.night.completedThisStep).length : 0;
   const stepRole = state.night?.stepRole ?? "night";
+  const nextStepRole = state.night?.nextStepRole ?? null;
   const stepLabel = roleLabels[stepRole] ?? "Night";
+  const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
   const roleInstruction = roleInstructions[roleKey] ?? roleInstructions.villager;
   const nightWaiting =
     state.night?.mode === "parallel"
       ? false
       : mappedPhase === "night" && stepRole !== roleKey;
+  const revealedRolesByCardId: Record<string, string> = {};
+  const cardAnnotationsByCardId: Record<string, string> = {};
+  const blinkCardIds = new Set<string>();
+  const selectableCardIds: string[] = [];
+
+  if (privateView?.kind === "werewolfSoloPeek") {
+    revealedRolesByCardId[`center-${privateView.centerIndex}`] = privateView.role;
+  }
+  if (privateView?.kind === "seerViewPlayer") {
+    revealedRolesByCardId[privateView.targetPlayerId] = privateView.role;
+  }
+  if (privateView?.kind === "seerViewCenter") {
+    privateView.center.forEach((item) => {
+      revealedRolesByCardId[`center-${item.centerIndex}`] = item.role;
+    });
+  }
+  if (privateView?.kind === "robberNewRole" && playerId) {
+    revealedRolesByCardId[playerId] = privateView.role;
+    cardAnnotationsByCardId[playerId] = "Your new role";
+  }
+  if (privateView?.kind === "insomniacFinalRole" && playerId) {
+    revealedRolesByCardId[playerId] = privateView.role;
+    cardAnnotationsByCardId[playerId] = "Final role";
+  }
+  if (privateView?.kind === "werewolfSawWerewolves") {
+    privateView.werewolfIds.filter((id) => id !== playerId).forEach((id) => blinkCardIds.add(id));
+  }
+  if (privateView?.kind === "minionSawWerewolves") {
+    privateView.werewolfIds.forEach((id) => blinkCardIds.add(id));
+  }
+  if (privateView?.kind === "masonSawMasons") {
+    privateView.masonIds.filter((id) => id !== playerId).forEach((id) => blinkCardIds.add(id));
+  }
+  if (privateView?.kind === "werewolfSoloStatus" && privateView.isSolo) {
+    selectableCardIds.push("center-0", "center-1", "center-2");
+  }
 
   return {
     data: {
@@ -253,20 +298,27 @@ export const mapGameData = (
           description: roleDescriptions[roleKey] ?? roleDescriptions.villager,
         },
         playerName,
+        playerId,
         cards,
       },
       phase: mappedPhase,
       phaseTimer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : undefined,
       night: {
         step: stepLabel,
+        nextStep: nextStepLabel,
         instruction: roleInstructions[stepRole] ?? roleInstructions.villager,
         remaining:
           nightSecondsRemaining !== null
             ? `Time left: ${formatSeconds(nightSecondsRemaining)}`
             : `${completed} of ${total} players complete`,
+        secondsRemaining: nightSecondsRemaining,
         role: roleLabels[roleKey],
         roleInstruction,
         waiting: nightWaiting,
+        selectableCardIds,
+        blinkCardIds: [...blinkCardIds],
+        revealedRolesByCardId,
+        cardAnnotationsByCardId,
       },
       discussion: {
         timer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : "00:00",
