@@ -33,11 +33,15 @@ type GameScreenData = {
   board: GameBoardData;
   phase: "deal" | "nightCountdown" | "night" | "discussion" | "voting" | "reveal";
   phaseTimer?: string;
+  settings?: {
+    autoAdvance?: boolean;
+  };
   night: {
     step: string;
     nextStep?: string | null;
     instruction: string;
     remaining: string;
+    endsAt?: number | null;
     secondsRemaining?: number | null;
     role?: string;
     roleInstruction?: string;
@@ -47,9 +51,15 @@ type GameScreenData = {
     revealedRolesByCardId?: Record<string, string>;
     cardAnnotationsByCardId?: Record<string, string>;
   };
-  discussion: { timer: string };
+  discussion: { timer: string; tokenRoleOptions?: Array<{ label: string; value: string }> };
   voting: { timer: string };
-  reveal: { eliminated: string; winners: string };
+  reveal: {
+    eliminated: string;
+    winners: string;
+    eliminatedPlayerIds?: string[];
+    winnerPlayerIds?: string[];
+    finalRoleByCardId?: Record<string, string>;
+  };
 };
 
 export type MappedGame = {
@@ -70,6 +80,18 @@ const roleOrder = [
   "doppleganger",
   "tanner",
   "villager",
+];
+
+const nightOrder = [
+  "doppleganger",
+  "werewolf",
+  "minion",
+  "mason",
+  "seer",
+  "robber",
+  "drunk",
+  "troublemaker",
+  "insomniac",
 ];
 
 const roleLabels: Record<string, string> = {
@@ -129,6 +151,9 @@ const buildRoleInstruction = (roleKey: string, privateView?: PrivateView) => {
   }
 
   if (roleKey === "mason" && privateView?.kind === "masonSawMasons") {
+    if ((privateView.masonIds?.length ?? 0) === 0) {
+      return "You are the only mason.";
+    }
     return "Other masons are highlighted.";
   }
 
@@ -175,9 +200,11 @@ const roleFromPrivateView = (view?: PrivateView) => {
   switch (view.kind) {
     case "yourOriginalRole":
     case "dopplegangerCopiedRole":
-    case "robberNewRole":
-    case "insomniacFinalRole":
       return view.role;
+    case "robberNewRole":
+      return "robber";
+    case "insomniacFinalRole":
+      return "insomniac";
     case "seerViewPlayer":
     case "seerViewCenter":
       return "seer";
@@ -239,9 +266,9 @@ export const mapLobbyData = (state: PublicGameState, gameId: string): LobbyData 
     settings: {
       autoAdvance: state.settings.autoAdvanceNight,
       parallelNight: state.settings.parallelNight,
-      nightStepSeconds: 10,
+      nightStepSeconds: state.settings.nightStepSeconds,
       discussionSeconds: state.settings.discussionSeconds,
-      votingSeconds: 10,
+      votingSeconds: state.settings.votingSeconds,
     },
     startCountdownSeconds: null,
   };
@@ -287,6 +314,25 @@ export const mapGameData = (
   const stepLabel = roleLabels[stepRole] ?? "Night";
   const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
   const roleInstruction = buildRoleInstruction(roleKey, privateView);
+  const playerNameById = new Map(state.players.map((item) => [item.playerId, item.name]));
+  const selectedRoleSet = new Set(state.roleSelection);
+  const orderedSelectedRoles = [
+    ...nightOrder.filter((role) => selectedRoleSet.has(role)),
+    ...roleOrder.filter((role) => !nightOrder.includes(role) && selectedRoleSet.has(role)),
+  ];
+  const nightIndexByRole = new Map(
+    orderedSelectedRoles
+      .filter((role) => nightOrder.includes(role))
+      .map((role, index) => [role, index + 1])
+  );
+  const discussionTokenRoleOptions = orderedSelectedRoles.map((role) => {
+    const label = roleLabels[role] ?? role;
+    const order = nightIndexByRole.get(role);
+    return {
+      label: order ? `${order}. ${label}` : label,
+      value: label,
+    };
+  });
   const nightWaiting =
     state.night?.mode === "parallel"
       ? false
@@ -295,23 +341,27 @@ export const mapGameData = (
   const cardAnnotationsByCardId: Record<string, string> = {};
   const blinkCardIds = new Set<string>();
   const selectableCardIds: string[] = [];
+  const inNightPhase = mappedPhase === "night";
+  const isParallelNight = state.night?.mode === "parallel";
+  const canShowActionReveal = (actionRole: string) =>
+    inNightPhase && (isParallelNight || stepRole === actionRole);
 
-  if (privateView?.kind === "werewolfSoloPeek") {
+  if (privateView?.kind === "werewolfSoloPeek" && canShowActionReveal("werewolf")) {
     revealedRolesByCardId[`center-${privateView.centerIndex}`] = privateView.role;
   }
-  if (privateView?.kind === "seerViewPlayer") {
+  if (privateView?.kind === "seerViewPlayer" && canShowActionReveal("seer")) {
     revealedRolesByCardId[privateView.targetPlayerId] = privateView.role;
   }
-  if (privateView?.kind === "seerViewCenter") {
+  if (privateView?.kind === "seerViewCenter" && canShowActionReveal("seer")) {
     privateView.center.forEach((item) => {
       revealedRolesByCardId[`center-${item.centerIndex}`] = item.role;
     });
   }
-  if (privateView?.kind === "robberNewRole" && playerId) {
+  if (privateView?.kind === "robberNewRole" && playerId && canShowActionReveal("robber")) {
     revealedRolesByCardId[playerId] = privateView.role;
     cardAnnotationsByCardId[playerId] = "Your new role";
   }
-  if (privateView?.kind === "insomniacFinalRole" && playerId) {
+  if (privateView?.kind === "insomniacFinalRole" && playerId && canShowActionReveal("insomniac")) {
     revealedRolesByCardId[playerId] = privateView.role;
     cardAnnotationsByCardId[playerId] = "Final role";
   }
@@ -346,6 +396,9 @@ export const mapGameData = (
       },
       phase: mappedPhase,
       phaseTimer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : undefined,
+      settings: {
+        autoAdvance: state.settings.autoAdvanceNight,
+      },
       night: {
         step: stepLabel,
         nextStep: nextStepLabel,
@@ -354,6 +407,7 @@ export const mapGameData = (
           nightSecondsRemaining !== null
             ? `Time left: ${formatSeconds(nightSecondsRemaining)}`
             : `${completed} of ${total} players complete`,
+        endsAt: state.night?.endsAt ?? null,
         secondsRemaining: nightSecondsRemaining,
         role: roleLabels[roleKey],
         roleInstruction,
@@ -365,13 +419,48 @@ export const mapGameData = (
       },
       discussion: {
         timer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : "00:00",
+        tokenRoleOptions: discussionTokenRoleOptions,
       },
       voting: {
         timer: phaseSecondsRemaining !== null ? formatSeconds(phaseSecondsRemaining) : "00:00",
       },
       reveal: {
-        eliminated: state.reveal?.eliminatedPlayerIds?.join(", ") ?? "None",
+        eliminated:
+          state.reveal?.eliminatedPlayerIds?.length && state.reveal.eliminatedPlayerIds.length > 0
+            ? state.reveal.eliminatedPlayerIds.map((id) => playerNameById.get(id) ?? id).join(", ")
+            : "None",
         winners: state.reveal?.winners ?? "Unknown",
+        eliminatedPlayerIds: state.reveal?.eliminatedPlayerIds ?? [],
+        winnerPlayerIds: (() => {
+          const finalRoles = state.reveal?.finalRoles ?? {};
+          const eliminatedIds = state.reveal?.eliminatedPlayerIds ?? [];
+          const winners = state.reveal?.winners;
+          if (winners === "tanner") {
+            return eliminatedIds.filter((id) => finalRoles[id] === "tanner");
+          }
+          if (winners === "village") {
+            return state.players
+              .map((item) => item.playerId)
+              .filter((id) => finalRoles[id] !== "werewolf" && finalRoles[id] !== "tanner");
+          }
+          if (winners === "werewolves") {
+            return state.players
+              .map((item) => item.playerId)
+              .filter((id) => finalRoles[id] === "werewolf" || finalRoles[id] === "minion");
+          }
+          return [];
+        })(),
+        finalRoleByCardId: (() => {
+          const byCard: Record<string, string> = {};
+          const finalRoles = state.reveal?.finalRoles ?? {};
+          Object.entries(finalRoles).forEach(([id, role]) => {
+            byCard[id] = role;
+          });
+          (state.reveal?.centerRoles ?? []).forEach((role, index) => {
+            byCard[`center-${index}`] = role;
+          });
+          return byCard;
+        })(),
       },
     },
     discussionTokensByCard: buildTokensByCard(state),

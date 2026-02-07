@@ -80,12 +80,13 @@ export function Playground() {
   };
 
   useEffect(() => {
-    if (!useLive || !liveState?.phaseEndsAt) return undefined;
+    if (!useLive) return undefined;
+    setNowMs(Date.now());
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [liveState?.phaseEndsAt, useLive]);
+  }, [useLive]);
 
   const sendLiveCommand = async (command: { type: string; payload?: Record<string, unknown> }) => {
     if (!useLive || !liveGameId || !livePlayerId || !liveSecret) return;

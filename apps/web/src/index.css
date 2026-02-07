@@ -2478,9 +2478,10 @@ input[type="number"] {
   justify-content: center;
   align-items: center;
   margin-bottom: clamp(6px, 1.4vw, 10px);
-  position: relative;
-  top: 0;
-  z-index: 12;
+  position: sticky;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  z-index: 16;
+  pointer-events: none;
 }
 
 .board-stage {
@@ -2582,13 +2583,18 @@ input[type="number"] {
 
 
 .card-selectable {
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.9), 0 12px 28px rgba(37, 99, 235, 0.35);
-  border-color: rgba(96, 165, 250, 0.9) !important;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.98),
+    0 0 0 6px rgba(147, 197, 253, 0.55),
+    0 0 26px rgba(37, 99, 235, 0.55);
+  border-color: rgba(147, 197, 253, 0.98) !important;
+  animation: selectablePulse 1s ease-in-out infinite;
 }
 
 .card-selected {
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.95), 0 0 20px rgba(34, 197, 94, 0.45);
   border-color: rgba(34, 197, 94, 0.95) !important;
+  animation: none;
 }
 
 .card-blink {
@@ -2610,6 +2616,22 @@ input[type="number"] {
   }
   50% {
     box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.95), 0 0 22px rgba(251, 191, 36, 0.45);
+  }
+}
+
+@keyframes selectablePulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px rgba(59, 130, 246, 0.98),
+      0 0 0 6px rgba(147, 197, 253, 0.45),
+      0 0 20px rgba(37, 99, 235, 0.4);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px rgba(59, 130, 246, 0.98),
+      0 0 0 7px rgba(191, 219, 254, 0.7),
+      0 0 34px rgba(59, 130, 246, 0.65);
   }
 }
 
@@ -2660,6 +2682,73 @@ input[type="number"] {
   place-items: center;
   text-shadow: 0 2px 6px rgba(2, 6, 23, 0.6);
   z-index: 2;
+}
+
+.card-eliminated {
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.95), 0 0 24px rgba(127, 29, 29, 0.45);
+  border-color: rgba(239, 68, 68, 0.9) !important;
+}
+
+.card-eliminated .card-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(127, 29, 29, 0.4);
+}
+
+.card-winner {
+  box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.95), 0 0 24px rgba(161, 98, 7, 0.4);
+  border-color: rgba(250, 204, 21, 0.9) !important;
+}
+
+.card-result-both {
+  box-shadow:
+    0 0 0 2px rgba(250, 204, 21, 0.9),
+    0 0 0 5px rgba(239, 68, 68, 0.72),
+    0 0 28px rgba(161, 98, 7, 0.35);
+  border-color: rgba(250, 204, 21, 0.95) !important;
+}
+
+.card-status-row {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.card-status {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.card-status-eliminated {
+  background: rgba(127, 29, 29, 0.9);
+  color: #fee2e2;
+  border: 1px solid rgba(248, 113, 113, 0.95);
+}
+
+.card-status-winner {
+  background: rgba(120, 53, 15, 0.9);
+  color: #fef3c7;
+  border: 1px solid rgba(250, 204, 21, 0.95);
+}
+
+.card-status-both {
+  background: linear-gradient(90deg, rgba(127, 29, 29, 0.95) 0%, rgba(120, 53, 15, 0.95) 100%);
+  color: #fff7ed;
+  border: 1px solid rgba(251, 191, 36, 0.92);
 }
 
 .card-menu {
@@ -3044,6 +3133,8 @@ input[type="number"] {
   background: rgba(12, 16, 26, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
 }
 
 .phase-pill {

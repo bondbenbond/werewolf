@@ -30,10 +30,40 @@ export type CommandResponse = {
   appliedVersion: number;
 };
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const parseResponseError = async (response: Response): Promise<ApiError> => {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = (await response.json()) as { error?: string; message?: string };
+      return new ApiError(
+        payload.message || payload.error || `Request failed (${response.status})`,
+        response.status,
+        payload.error
+      );
+    } catch {
+      return new ApiError(`Request failed (${response.status})`, response.status);
+    }
+  }
+
+  const text = await response.text();
+  return new ApiError(text || `Request failed (${response.status})`, response.status);
+};
+
 const handleJson = async <T>(response: Response): Promise<T> => {
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed (${response.status})`);
+    throw await parseResponseError(response);
   }
   return (await response.json()) as T;
 };
@@ -91,10 +121,9 @@ export const sendCommand = async (
       if (error?.error === "VERSION_MISMATCH" && typeof error.serverVersion === "number") {
         return doRequest({ ...payload, lastKnownVersion: error.serverVersion });
       }
-      throw new Error(error?.message || "Version mismatch");
+      throw new ApiError(error?.message || "Version mismatch", response.status, error?.error);
     }
-    const text = await response.text();
-    throw new Error(text || `Request failed (${response.status})`);
+    throw await parseResponseError(response);
   };
 
   return doRequest(envelope);
@@ -112,7 +141,6 @@ export const deleteGame = async (
     body: JSON.stringify({ playerId, secret }),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed (${response.status})`);
+    throw await parseResponseError(response);
   }
 };

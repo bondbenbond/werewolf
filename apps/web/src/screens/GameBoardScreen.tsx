@@ -34,13 +34,15 @@ export const GameBoardScreen = forwardRef<
     cardTokenById?: Record<string, string | null | undefined>;
     cardVoteCountById?: Record<string, number | undefined>;
     cardMenuForId?: string | null;
-    cardMenuItems?: string[];
+    cardMenuItems?: Array<{ label: string; value: string }>;
     cardMenuPosition?: { placement: "top" | "bottom"; align: "left" | "center" | "right" };
     selectableCardIds?: string[];
     selectedCardIds?: string[];
     blinkCardIds?: string[];
     revealedRoleByCardId?: Record<string, string>;
     cardNoteById?: Record<string, string>;
+    eliminatedCardIds?: string[];
+    winnerCardIds?: string[];
     onCardMenuSelect?: (cardId: string, role: string | null) => void;
     onCardClick?: (cardId: string, rect: DOMRect) => void;
     onAcknowledge?: () => void;
@@ -62,6 +64,8 @@ export const GameBoardScreen = forwardRef<
     blinkCardIds,
     revealedRoleByCardId,
     cardNoteById,
+    eliminatedCardIds,
+    winnerCardIds,
     onCardMenuSelect,
     onCardClick,
     onAcknowledge,
@@ -140,6 +144,8 @@ export const GameBoardScreen = forwardRef<
   const selectedSet = new Set(selectedCardIds ?? []);
   const selectableSet = new Set(selectableCardIds ?? []);
   const blinkSet = new Set(blinkCardIds ?? []);
+  const eliminatedSet = new Set(eliminatedCardIds ?? []);
+  const winnerSet = new Set(winnerCardIds ?? []);
 
   useEffect(() => {
     if (typeof showRoleModalOverride === "boolean") {
@@ -151,6 +157,8 @@ export const GameBoardScreen = forwardRef<
     const isSelectable = selectableSet.has(card.id);
     const isSelected = selectedSet.has(card.id);
     const isBlinking = blinkSet.has(card.id);
+    const isEliminated = eliminatedSet.has(card.id);
+    const isWinner = winnerSet.has(card.id);
     const revealedRole = revealedRoleByCardId?.[card.id];
     const faceImage = cardsFaceUp ? roleImage : imageForRole(revealedRole);
     const note = cardNoteById?.[card.id];
@@ -161,7 +169,9 @@ export const GameBoardScreen = forwardRef<
             cardTokenById?.[card.id] ? "card-tokened" : ""
           } ${cardVoteCountById?.[card.id] ? "card-voted" : ""} ${
             isSelectable ? "card-selectable" : ""
-          } ${isSelected ? "card-selected" : ""} ${isBlinking ? "card-blink" : ""}`}
+          } ${isSelected ? "card-selected" : ""} ${isBlinking ? "card-blink" : ""} ${
+            isEliminated ? "card-eliminated" : ""
+          } ${isWinner ? "card-winner" : ""}`}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             onCardClick?.(card.id, rect);
@@ -173,6 +183,12 @@ export const GameBoardScreen = forwardRef<
               backgroundImage: `url(${faceImage})`,
             }}
           />
+          {isEliminated || isWinner ? (
+            <div className="card-status-row" aria-live="polite">
+              {isWinner ? <span className="card-status card-status-winner">Winner</span> : null}
+              {!isWinner && isEliminated ? <span className="card-status card-status-eliminated">Eliminated</span> : null}
+            </div>
+          ) : null}
           {cardTokenById?.[card.id] ? (
             <img className="card-token" src={tokenImageFor(cardTokenById[card.id]) ?? ""} alt="" />
           ) : null}
@@ -199,9 +215,9 @@ export const GameBoardScreen = forwardRef<
             <button type="button" onClick={() => onCardMenuSelect?.(card.id, null)}>
               Clear
             </button>
-            {cardMenuItems.map((role) => (
-              <button key={role} type="button" onClick={() => onCardMenuSelect?.(card.id, role)}>
-                {role}
+            {cardMenuItems.map((item) => (
+              <button key={item.value} type="button" onClick={() => onCardMenuSelect?.(card.id, item.value)}>
+                {item.label}
               </button>
             ))}
           </div>

@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useApiEnv } from "../api/ApiContext";
-import { createGame, joinGame } from "../api/client";
+import { ApiError, createGame, joinGame } from "../api/client";
 import { persistSession, type SessionInfo } from "../api/session";
 import { Button } from "../components/Button";
 
@@ -117,7 +117,11 @@ export function HomeScreen({
         isHost: false,
       });
     } catch (error) {
-      setApiError((error as Error).message);
+      if (error instanceof ApiError && error.code === "GAME_NOT_FOUND") {
+        setApiError(`Game ${code} does not exist. Check the code and try again.`);
+      } else {
+        setApiError((error as Error).message);
+      }
     } finally {
       setSubmitting(false);
     }

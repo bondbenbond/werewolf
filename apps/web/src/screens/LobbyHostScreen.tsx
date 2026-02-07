@@ -294,7 +294,7 @@ export function LobbyHostScreen({
             <div className="modal-body">
               <div className="toggle-row">
                 <span className="settings-label">
-                  Auto-advance night steps
+                  Auto-advance after deal
                   <span className="help-wrap">
                     <button
                       className="help-icon"
@@ -308,7 +308,7 @@ export function LobbyHostScreen({
                     </button>
                     {activeHelp === "autoAdvance" ? (
                       <span className="help-bubble help-bubble-below">
-                        Moves to the next night role automatically when the timer ends.
+                        Automatically runs night, discussion, and voting progression after deal.
                       </span>
                     ) : null}
                   </span>

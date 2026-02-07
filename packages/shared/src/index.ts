@@ -45,7 +45,9 @@ export type Player = {
 };
 
 export type GameSettings = {
+  nightStepSeconds: number;
   discussionSeconds: number;
+  votingSeconds: number;
   allowVoteChanges: boolean;
   anonymousVotes: boolean;
   showActionLogOnReveal: boolean;

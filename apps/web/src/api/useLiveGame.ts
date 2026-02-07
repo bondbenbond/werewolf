@@ -22,7 +22,9 @@ export type PublicGameState = {
   players: Array<{ playerId: string; name: string; connected: boolean; ready: boolean }>;
   roleSelection: string[];
   settings: {
+    nightStepSeconds: number;
     discussionSeconds: number;
+    votingSeconds: number;
     allowVoteChanges: boolean;
     anonymousVotes: boolean;
     showActionLogOnReveal: boolean;

@@ -26,7 +26,9 @@ import {
 const PORT = Number(process.env.PORT ?? 4000);
 
 const DEFAULT_SETTINGS: GameSettings = {
+  nightStepSeconds: 10,
   discussionSeconds: 300,
+  votingSeconds: 20,
   allowVoteChanges: true,
   anonymousVotes: true,
   showActionLogOnReveal: false,
@@ -45,6 +47,11 @@ type GameRecord = {
   privateStreams: Map<string, Set<NodeJS.WritableStream>>;
   privateViews: Map<string, PrivateView>;
   nightSteps: Role[];
+  dealTimer?: NodeJS.Timeout;
+  nightCountdownTimer?: NodeJS.Timeout;
+  nightStepTimer?: NodeJS.Timeout;
+  discussionTimer?: NodeJS.Timeout;
+  votingTimer?: NodeJS.Timeout;
   parallelResultTimer?: NodeJS.Timeout;
   parallelNightTimer?: NodeJS.Timeout;
   dopplegangerInsomniac: Set<string>;
@@ -241,6 +248,51 @@ const clearParallelNightTimer = (record: GameRecord) => {
   }
 };
 
+const clearDealTimer = (record: GameRecord) => {
+  if (record.dealTimer) {
+    clearTimeout(record.dealTimer);
+    record.dealTimer = undefined;
+  }
+};
+
+const clearNightCountdownTimer = (record: GameRecord) => {
+  if (record.nightCountdownTimer) {
+    clearTimeout(record.nightCountdownTimer);
+    record.nightCountdownTimer = undefined;
+  }
+};
+
+const clearNightStepTimer = (record: GameRecord) => {
+  if (record.nightStepTimer) {
+    clearTimeout(record.nightStepTimer);
+    record.nightStepTimer = undefined;
+  }
+};
+
+const clearDiscussionTimer = (record: GameRecord) => {
+  if (record.discussionTimer) {
+    clearTimeout(record.discussionTimer);
+    record.discussionTimer = undefined;
+  }
+};
+
+const clearVotingTimer = (record: GameRecord) => {
+  if (record.votingTimer) {
+    clearTimeout(record.votingTimer);
+    record.votingTimer = undefined;
+  }
+};
+
+const clearAllPhaseTimers = (record: GameRecord) => {
+  clearDealTimer(record);
+  clearNightCountdownTimer(record);
+  clearNightStepTimer(record);
+  clearDiscussionTimer(record);
+  clearVotingTimer(record);
+  clearParallelResultTimer(record);
+  clearParallelNightTimer(record);
+};
+
 const getTargetKind = (state: GameState, targetId: string): "player" | "center" | "invalid" => {
   if (state.playersById[targetId]) return "player";
   if (targetId.startsWith("center-")) {
@@ -360,6 +412,18 @@ const computeVoteTally = (state: GameState): Record<string, number> => {
   return tally;
 };
 
+const emitPendingDopplegangerInsomniacPeeks = (record: GameRecord) => {
+  record.dopplegangerInsomniac.forEach((playerId) => {
+    const role = getCurrentRole(record.state, playerId);
+    if (role) {
+      const view: PrivateView = { kind: "insomniacFinalRole", role };
+      record.privateViews.set(playerId, view);
+      emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+    }
+  });
+  record.dopplegangerInsomniac.clear();
+};
+
 const computeEliminations = (tally: Record<string, number>): string[] => {
   let topVotes = 0;
   Object.values(tally).forEach((votes) => {
@@ -382,6 +446,22 @@ const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): Reveal
   const werewolves = Object.values(roles).filter((role) => role === "werewolf");
   if (werewolves.length === 0) return "village";
   return "werewolves";
+};
+
+const revealVotingResults = (record: GameRecord) => {
+  const tally = computeVoteTally(record.state);
+  const eliminatedPlayerIds = computeEliminations(tally);
+  const winners = computeWinners(record.state, eliminatedPlayerIds);
+  record.state.reveal = {
+    tally,
+    eliminatedPlayerIds,
+    winners,
+    finalRolesByPlayer: record.state.roles?.currentRolesByPlayer ?? {},
+    centerRoles: record.state.roles?.centerRoles ?? ["villager", "villager", "villager"],
+  };
+  record.state.phase = "reveal";
+  record.state.phaseEndsAt = undefined;
+  record.state.updatedAt = Date.now();
 };
 
 const removePlayerFromState = (record: GameRecord, playerId: string) => {
@@ -427,7 +507,42 @@ const removePlayerFromState = (record: GameRecord, playerId: string) => {
   }
 };
 
+const NIGHT_COUNTDOWN_MS = 3_000;
+const PARALLEL_NIGHT_MS = 10_000;
+const PARALLEL_RESULT_MS = 10_000;
+const getNightStepMs = (record: GameRecord) => Math.max(1, record.state.settings.nightStepSeconds) * 1000;
+const getVotingMs = (record: GameRecord) => Math.max(1, record.state.settings.votingSeconds) * 1000;
+
+const scheduleDiscussionAutoAdvance = (record: GameRecord) => {
+  if (!record.state.settings.autoAdvanceNight || record.state.phase !== "discussion") return;
+  clearDiscussionTimer(record);
+  const delay = Math.max(0, (record.state.phaseEndsAt ?? Date.now()) - Date.now());
+  record.discussionTimer = setTimeout(() => {
+    if (record.state.phase !== "discussion") return;
+    record.state.phase = "voting";
+    record.state.voting = resetVoting(record.state);
+    record.state.phaseEndsAt = Date.now() + getVotingMs(record);
+    record.state.updatedAt = Date.now();
+    scheduleVotingAutoReveal(record);
+    appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+  }, delay);
+};
+
+const scheduleVotingAutoReveal = (record: GameRecord) => {
+  if (!record.state.settings.autoAdvanceNight || record.state.phase !== "voting") return;
+  clearVotingTimer(record);
+  const delay = Math.max(0, (record.state.phaseEndsAt ?? Date.now()) - Date.now());
+  record.votingTimer = setTimeout(() => {
+    if (record.state.phase !== "voting" || !record.state.voting) return;
+    revealVotingResults(record);
+    appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+  }, delay);
+};
+
 const startNight = (record: GameRecord) => {
+  clearNightStepTimer(record);
+  clearParallelNightTimer(record);
+  clearParallelResultTimer(record);
   record.nightSteps = buildNightSteps(record.state);
 
   const emitInfoForStepRole = (stepRole: Role | null) => {
@@ -436,9 +551,13 @@ const startNight = (record: GameRecord) => {
       const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
       wolves.forEach((wolfId) => {
         if (isPlayerAloneWerewolf(record.state, wolfId)) {
+          const view: PrivateView = { kind: "werewolfSoloStatus", isSolo: true };
+          record.privateViews.set(wolfId, view);
           emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
         } else {
           const others = wolves.filter((id) => id !== wolfId);
+          const view: PrivateView = { kind: "werewolfSawWerewolves", werewolfIds: others };
+          record.privateViews.set(wolfId, view);
           emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
         }
       });
@@ -446,12 +565,19 @@ const startNight = (record: GameRecord) => {
     if (stepRole === "minion") {
       const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
       eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+        const view: PrivateView = { kind: "minionSawWerewolves", werewolfIds: wolves };
+        record.privateViews.set(minionId, view);
         emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
       });
     }
     if (stepRole === "mason") {
       const masons = eligiblePlayersForNightRole(record.state, "mason");
       masons.forEach((masonId) => {
+        const view: PrivateView = {
+          kind: "masonSawMasons",
+          masonIds: masons.filter((id) => id !== masonId),
+        };
+        record.privateViews.set(masonId, view);
         emitPrivate(record, masonId, "MASON_SAW_MASONS", {
           masonIds: masons.filter((id) => id !== masonId),
         });
@@ -468,7 +594,7 @@ const startNight = (record: GameRecord) => {
       stepRole: null,
       totalSteps: record.nightSteps.length,
       completionByPlayer,
-      endsAt: Date.now() + 10_000,
+      endsAt: Date.now() + PARALLEL_NIGHT_MS,
       mode: "parallel",
     };
     if (record.state.settings.autoAdvanceNight) {
@@ -476,7 +602,7 @@ const startNight = (record: GameRecord) => {
       record.parallelNightTimer = setTimeout(() => {
         advanceNightStep(record);
         appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, 10_000);
+      }, PARALLEL_NIGHT_MS);
     }
     // Info-only roles get their info immediately in parallel mode.
     emitInfoForStepRole("werewolf");
@@ -495,9 +621,19 @@ const startNight = (record: GameRecord) => {
       stepRole,
       totalSteps: record.nightSteps.length,
       completionByPlayer,
-      endsAt: Date.now() + 10_000,
+      endsAt: Date.now() + getNightStepMs(record),
       mode: "sequential",
     };
+    if (record.state.settings.autoAdvanceNight) {
+      record.nightStepTimer = setTimeout(() => {
+        if (record.state.phase !== "night" || record.state.night?.stepIndex !== 0) return;
+        if (record.state.night?.stepRole === "insomniac") {
+          emitPendingDopplegangerInsomniacPeeks(record);
+        }
+        advanceNightStep(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+      }, getNightStepMs(record));
+    }
     emitInfoForStepRole(stepRole);
   }
   record.state.phase = "night";
@@ -507,9 +643,10 @@ const startNight = (record: GameRecord) => {
 
 const advanceNightStep = (record: GameRecord) => {
   if (!record.state.night) return;
+  clearNightStepTimer(record);
   if (record.state.night.mode === "parallel") {
     record.state.phase = "parallelResult";
-    record.state.phaseEndsAt = Date.now() + 10_000;
+    record.state.phaseEndsAt = Date.now() + PARALLEL_RESULT_MS;
     record.state.night = undefined;
     if (record.state.settings.autoAdvanceNight) {
       clearParallelResultTimer(record);
@@ -517,8 +654,9 @@ const advanceNightStep = (record: GameRecord) => {
         record.state.phase = "discussion";
         record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
         record.state.updatedAt = Date.now();
+        scheduleDiscussionAutoAdvance(record);
         appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, 10_000);
+      }, PARALLEL_RESULT_MS);
     }
     record.state.updatedAt = Date.now();
     return;
@@ -530,6 +668,7 @@ const advanceNightStep = (record: GameRecord) => {
     record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
     record.state.night = undefined;
     record.state.updatedAt = Date.now();
+    scheduleDiscussionAutoAdvance(record);
     return;
   }
 
@@ -543,16 +682,30 @@ const advanceNightStep = (record: GameRecord) => {
     stepRole,
     totalSteps: record.nightSteps.length,
     completionByPlayer,
-    endsAt: Date.now() + 10_000,
+    endsAt: Date.now() + getNightStepMs(record),
     mode: "sequential",
   };
+  if (record.state.settings.autoAdvanceNight) {
+    record.nightStepTimer = setTimeout(() => {
+      if (record.state.phase !== "night" || record.state.night?.stepIndex !== nextIndex) return;
+      if (record.state.night?.stepRole === "insomniac") {
+        emitPendingDopplegangerInsomniacPeeks(record);
+      }
+      advanceNightStep(record);
+      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+    }, getNightStepMs(record));
+  }
   if (stepRole === "werewolf") {
     const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
     wolves.forEach((wolfId) => {
       if (isPlayerAloneWerewolf(record.state, wolfId)) {
+        const view: PrivateView = { kind: "werewolfSoloStatus", isSolo: true };
+        record.privateViews.set(wolfId, view);
         emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
       } else {
         const others = wolves.filter((id) => id !== wolfId);
+        const view: PrivateView = { kind: "werewolfSawWerewolves", werewolfIds: others };
+        record.privateViews.set(wolfId, view);
         emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
       }
     });
@@ -560,18 +713,37 @@ const advanceNightStep = (record: GameRecord) => {
   if (stepRole === "minion") {
     const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
     eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+      const view: PrivateView = { kind: "minionSawWerewolves", werewolfIds: wolves };
+      record.privateViews.set(minionId, view);
       emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
     });
   }
   if (stepRole === "mason") {
     const masons = eligiblePlayersForNightRole(record.state, "mason");
     masons.forEach((masonId) => {
+      const view: PrivateView = {
+        kind: "masonSawMasons",
+        masonIds: masons.filter((id) => id !== masonId),
+      };
+      record.privateViews.set(masonId, view);
       emitPrivate(record, masonId, "MASON_SAW_MASONS", {
         masonIds: masons.filter((id) => id !== masonId),
       });
     });
   }
   record.state.updatedAt = Date.now();
+};
+
+const startNightCountdown = (record: GameRecord) => {
+  clearNightCountdownTimer(record);
+  record.state.phase = "nightCountdown";
+  record.state.phaseEndsAt = Date.now() + NIGHT_COUNTDOWN_MS;
+  record.state.updatedAt = Date.now();
+  record.nightCountdownTimer = setTimeout(() => {
+    if (record.state.phase !== "nightCountdown") return;
+    startNight(record);
+    appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+  }, NIGHT_COUNTDOWN_MS);
 };
 
 const validateNightAction = (
@@ -917,6 +1089,7 @@ app.post(
     if (!isHost || record.state.phase !== "lobby") {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
     }
+    clearAllPhaseTimers(record);
     try {
       assignRoles(record.state);
     } catch (err) {
@@ -938,6 +1111,14 @@ app.post(
         emitPrivate(record, playerId, "ROLE_ASSIGNED", { role });
       }
     });
+    if (record.state.settings.autoAdvanceNight) {
+      clearDealTimer(record);
+      record.dealTimer = setTimeout(() => {
+        if (record.state.phase !== "deal") return;
+        startNightCountdown(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+      }, 5_000);
+    }
   }
 
   if (commandType === "ACK_ROLE") {
@@ -948,7 +1129,7 @@ app.post(
       record.state.deal.ackByPlayer[body.playerId] = true;
       record.state.updatedAt = Date.now();
     }
-    if (Object.values(record.state.deal.ackByPlayer).every(Boolean)) {
+    if (!record.state.settings.autoAdvanceNight && Object.values(record.state.deal.ackByPlayer).every(Boolean)) {
       record.state.phaseEndsAt = undefined;
     }
   }
@@ -957,14 +1138,8 @@ app.post(
     if (!isHost || record.state.phase !== "deal") {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in deal" });
     }
-    record.state.phase = "nightCountdown";
-    record.state.phaseEndsAt = Date.now() + 3000;
-    setTimeout(() => {
-      if (record.state.phase !== "nightCountdown") return;
-      startNight(record);
-      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-    }, 3000);
-    record.state.updatedAt = Date.now();
+    clearDealTimer(record);
+    startNightCountdown(record);
   }
 
   if (commandType === "ADVANCE_NIGHT_STEP") {
@@ -972,15 +1147,7 @@ app.post(
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during night" });
     }
     if (record.state.phase === "night" && record.state.night?.stepRole === "insomniac") {
-      record.dopplegangerInsomniac.forEach((playerId) => {
-        const role = getCurrentRole(record.state, playerId);
-        if (role) {
-          const view: PrivateView = { kind: "insomniacFinalRole", role };
-          record.privateViews.set(playerId, view);
-          emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
-        }
-      });
-      record.dopplegangerInsomniac.clear();
+      emitPendingDopplegangerInsomniacPeeks(record);
     }
     advanceNightStep(record);
     record.state.updatedAt = Date.now();
@@ -1076,10 +1243,12 @@ app.post(
     if (!isHost || record.state.phase !== "discussion") {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during discussion" });
     }
+    clearDiscussionTimer(record);
     record.state.phase = "voting";
     record.state.voting = resetVoting(record.state);
-    record.state.phaseEndsAt = Date.now() + 20_000;
+    record.state.phaseEndsAt = Date.now() + getVotingMs(record);
     record.state.updatedAt = Date.now();
+    scheduleVotingAutoReveal(record);
   }
 
   if (commandType === "LEAVE_GAME") {
@@ -1140,27 +1309,15 @@ app.post(
     if (!isHost || record.state.phase !== "voting" || !record.state.voting) {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during voting" });
     }
-    const tally = computeVoteTally(record.state);
-    const eliminatedPlayerIds = computeEliminations(tally);
-    const winners = computeWinners(record.state, eliminatedPlayerIds);
-    record.state.reveal = {
-      tally,
-      eliminatedPlayerIds,
-      winners,
-      finalRolesByPlayer: record.state.roles?.currentRolesByPlayer ?? {},
-      centerRoles: record.state.roles?.centerRoles ?? ["villager", "villager", "villager"],
-    };
-    record.state.phase = "reveal";
-    record.state.phaseEndsAt = undefined;
-    record.state.updatedAt = Date.now();
+    clearVotingTimer(record);
+    revealVotingResults(record);
   }
 
   if (commandType === "RESET_GAME") {
     if (!isHost) {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only" });
     }
-    clearParallelResultTimer(record);
-    clearParallelNightTimer(record);
+    clearAllPhaseTimers(record);
     record.state.phase = "lobby";
     record.state.phaseEndsAt = undefined;
     record.state.roles = undefined;

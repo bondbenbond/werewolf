@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useApiEnv } from "../api/ApiContext";
-import { joinGame } from "../api/client";
+import { ApiError, joinGame } from "../api/client";
 import { persistSession, type SessionInfo } from "../api/session";
 import { Button } from "../components/Button";
 
@@ -35,7 +35,11 @@ export function JoinGameScreen({ gameId, onSession }: JoinGameScreenProps) {
       persistSession(session);
       onSession?.(session);
     } catch (err) {
-      setError((err as Error).message);
+      if (err instanceof ApiError && err.code === "GAME_NOT_FOUND") {
+        setError(`Game ${gameId} does not exist. Check the code and try again.`);
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setSubmitting(false);
     }
