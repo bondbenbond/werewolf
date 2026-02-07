@@ -51,10 +51,14 @@ export function Playground() {
   const liveState = live.snapshot?.state;
   const liveLobby = liveState ? mapLobbyData(liveState, liveGameId.trim()) : null;
   const liveGame = liveState ? mapGameData(liveState, live.snapshot?.private, livePlayerId.trim()) : null;
+  const livePrivateKind = live.snapshot?.private?.kind ?? "none";
   const livePhase = liveState?.phase ?? null;
   const livePhaseRemaining = liveState?.phaseEndsAt
     ? Math.max(0, Math.ceil((liveState.phaseEndsAt - nowMs) / 1000))
     : null;
+  const liveConnected = useLive && !!liveState;
+  const canSendLiveCommand =
+    useLive && liveGameId.trim().length > 0 && livePlayerId.trim().length > 0 && liveSecret.trim().length > 0;
   const effectiveIsHost =
     useLive && liveState ? liveState.hostPlayerId === livePlayerId.trim() : hostView;
   const resolvedScreen =
@@ -106,7 +110,7 @@ export function Playground() {
           type="button"
           onClick={() => setOpen((value) => !value)}
         >
-          Dev
+          {liveConnected ? "Dev · Live" : "Dev"}
         </button>
         {open ? (
           <div className="glass playground-panel">
@@ -117,6 +121,7 @@ export function Playground() {
                 value={screen}
                 onChange={(event) => setScreen(event.target.value as (typeof screens)[number])}
                 className="input"
+                disabled={liveConnected && followPhase}
               >
                 {screens.map((item) => (
                   <option key={item} value={item}>
@@ -128,10 +133,16 @@ export function Playground() {
             <div className="field">
               <label>View mode</label>
               <div className="pill-row">
-                <button className="pill small" type="button" onClick={() => setHostView((prev) => !prev)}>
+                <button
+                  className="pill small"
+                  type="button"
+                  onClick={() => setHostView((prev) => !prev)}
+                  disabled={liveConnected}
+                >
                   {hostView ? "Host view" : "Player view"}
                 </button>
               </div>
+              {liveConnected ? <div className="micro">Live connection controls host/player identity.</div> : null}
             </div>
             <div className="field">
               <label>Live server</label>
@@ -180,8 +191,55 @@ export function Playground() {
                   {commandError ? ` · ${commandError}` : ""}
                 </div>
               ) : null}
+              {useLive ? (
+                <div className="micro">
+                  Phase: {livePhase ?? "-"} {livePhaseRemaining !== null ? `· ${livePhaseRemaining}s` : ""} · Private: {livePrivateKind}
+                </div>
+              ) : null}
             </div>
-            {screen === "Game" ? (
+            {liveConnected ? (
+              <div className="field">
+                <label>Live debug</label>
+                <div className="pill-row">
+                  <button className="pill small" type="button" onClick={() => setFollowPhase(true)}>
+                    Follow live phase
+                  </button>
+                  <button className="pill small" type="button" onClick={() => setFollowPhase(false)}>
+                    Freeze screen
+                  </button>
+                  <button className="pill small" type="button" onClick={() => setScreen("Game")}>
+                    Jump to Game
+                  </button>
+                </div>
+                <div className="pill-row mini">
+                  <button
+                    className="pill small"
+                    type="button"
+                    onClick={() => sendLiveCommand({ type: "ACK_ROLE" })}
+                    disabled={!canSendLiveCommand}
+                  >
+                    Ack role
+                  </button>
+                  <button
+                    className="pill small"
+                    type="button"
+                    onClick={() => sendLiveCommand({ type: "NIGHT_ACTION", payload: { kind: "done" } })}
+                    disabled={!canSendLiveCommand || livePhase !== "night"}
+                  >
+                    Night done
+                  </button>
+                  <button
+                    className="pill small"
+                    type="button"
+                    onClick={() => sendLiveCommand({ type: "ADVANCE_NIGHT_STEP" })}
+                    disabled={!canSendLiveCommand || !effectiveIsHost || livePhase !== "night"}
+                  >
+                    Next role (host)
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {!liveConnected && screen === "Game" ? (
               <div className="field">
                 <label>Game dev</label>
                 <div className="pill-row">
@@ -233,7 +291,7 @@ export function Playground() {
                 </div>
               </div>
             ) : null}
-            {screen === "Game" ? (
+            {!liveConnected && screen === "Game" ? (
               <div className="field">
                 <label htmlFor="game-phase">Phase</label>
                 <select
@@ -252,7 +310,7 @@ export function Playground() {
                 </select>
               </div>
             ) : null}
-            {screen === "Game" && gamePhase === "deal" ? (
+            {!liveConnected && screen === "Game" && gamePhase === "deal" ? (
               <div className="field">
                 <label>Deal timer</label>
                 <div className="pill-row">
@@ -282,7 +340,7 @@ export function Playground() {
                 </div>
               </div>
             ) : null}
-            {screen === "LobbyPlayer" || screen === "LobbyHost" ? (
+            {!liveConnected && (screen === "LobbyPlayer" || screen === "LobbyHost") ? (
               <div className="field">
                 <label>Lobby dev</label>
                 <div className="pill-row">
@@ -319,7 +377,7 @@ export function Playground() {
                 </div>
               </div>
             ) : null}
-            {screen === "Game" && gamePhase === "night" ? (
+            {!liveConnected && screen === "Game" && gamePhase === "night" ? (
               <div className="field">
                 <label>Night dev</label>
                 <div className="pill-row">

@@ -429,6 +429,36 @@ const removePlayerFromState = (record: GameRecord, playerId: string) => {
 
 const startNight = (record: GameRecord) => {
   record.nightSteps = buildNightSteps(record.state);
+
+  const emitInfoForStepRole = (stepRole: Role | null) => {
+    if (!stepRole) return;
+    if (stepRole === "werewolf") {
+      const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+      wolves.forEach((wolfId) => {
+        if (isPlayerAloneWerewolf(record.state, wolfId)) {
+          emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
+        } else {
+          const others = wolves.filter((id) => id !== wolfId);
+          emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
+        }
+      });
+    }
+    if (stepRole === "minion") {
+      const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+      eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+        emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
+      });
+    }
+    if (stepRole === "mason") {
+      const masons = eligiblePlayersForNightRole(record.state, "mason");
+      masons.forEach((masonId) => {
+        emitPrivate(record, masonId, "MASON_SAW_MASONS", {
+          masonIds: masons.filter((id) => id !== masonId),
+        });
+      });
+    }
+  };
+
   if (record.state.settings.parallelNight) {
     const completionByPlayer = Object.fromEntries(
       record.state.playerOrder.map((id) => [id, false])
@@ -449,25 +479,9 @@ const startNight = (record: GameRecord) => {
       }, 10_000);
     }
     // Info-only roles get their info immediately in parallel mode.
-    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
-    wolves.forEach((wolfId) => {
-      if (isPlayerAloneWerewolf(record.state, wolfId)) {
-        emitPrivate(record, wolfId, "WEREWOLF_SOLO_STATUS", { isSolo: true });
-      } else {
-        const others = wolves.filter((id) => id !== wolfId);
-        emitPrivate(record, wolfId, "WEREWOLF_SAW_WEREWOLVES", { werewolfIds: others });
-      }
-    });
-    const minions = eligiblePlayersForNightRole(record.state, "minion");
-    minions.forEach((minionId) => {
-      emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
-    });
-    const masons = eligiblePlayersForNightRole(record.state, "mason");
-    masons.forEach((masonId) => {
-      emitPrivate(record, masonId, "MASON_SAW_MASONS", {
-        masonIds: masons.filter((id) => id !== masonId),
-      });
-    });
+    emitInfoForStepRole("werewolf");
+    emitInfoForStepRole("minion");
+    emitInfoForStepRole("mason");
   } else {
     const stepRole = record.nightSteps[0] ?? null;
     const completionByPlayer: Record<string, boolean> = {};
@@ -484,6 +498,7 @@ const startNight = (record: GameRecord) => {
       endsAt: Date.now() + 10_000,
       mode: "sequential",
     };
+    emitInfoForStepRole(stepRole);
   }
   record.state.phase = "night";
   record.state.phaseEndsAt = undefined;

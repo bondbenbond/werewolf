@@ -267,10 +267,17 @@ export function GameScreen({
       ? data.night.secondsRemaining ?? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null
       : null;
   const roleNeedsSelection = ["werewolf", "seer", "robber", "troublemaker", "drunk"].includes(roleKey);
+  const roleNeedsStartModal = roleNeedsSelection || roleKey === "insomniac";
   const showNightWaitingModal = data.phase === "night" && !!data.night.waiting;
   const showNightStartModal =
-    data.phase === "night" && !data.night.waiting && roleNeedsSelection && nightActionState === "idle";
+    data.phase === "night" && !data.night.waiting && roleNeedsStartModal && nightActionState === "idle";
   const showNightHintBanner = data.phase === "night" && !showNightStartModal && !showNightWaitingModal;
+  const boardPhaseSecondsRemaining =
+    data.phase === "night"
+      ? nightCountdown
+      : data.phase === "nightCountdown" || data.phase === "deal"
+      ? phaseRemaining ?? data.board.phaseSecondsRemaining ?? null
+      : phaseRemaining ?? data.board.phaseSecondsRemaining ?? null;
   const hostNextAction = useMemo(() => {
     if (data.phase === "deal") {
       return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
@@ -296,6 +303,7 @@ export function GameScreen({
         data={{
           ...data.board,
           phase: phaseLabel,
+          phaseSecondsRemaining: boardPhaseSecondsRemaining ?? undefined,
         }}
         isHost={isHost}
         initialRoleModal={data.phase === "deal"}
@@ -403,7 +411,17 @@ export function GameScreen({
             <p className="eyebrow">Your action</p>
             <h3>{data.night.role ?? "Role action"}</h3>
             <p className="lede">{data.night.roleInstruction ?? data.night.instruction}</p>
-            <Button variant="success" onClick={() => setNightActionState("selecting")}>
+            <Button
+              variant="success"
+              onClick={() => {
+                if (roleKey === "insomniac") {
+                  onNightAction?.({ kind: "insomniacPeek" });
+                  setNightActionState("confirmed");
+                  return;
+                }
+                setNightActionState("selecting");
+              }}
+            >
               Start action
             </Button>
           </div>
@@ -424,14 +442,17 @@ export function GameScreen({
 
       {data.phase === "discussion" ? (
         <div className="action-banner">
-          <span>Discussion started · {data.discussion.timer} left · Tap a player to assign a token</span>
+          <span>
+            Discussion started · {phaseRemaining !== null ? `${phaseRemaining}s` : data.discussion.timer} left · Tap a
+            player to assign a token
+          </span>
         </div>
       ) : null}
 
       {data.phase === "voting" ? (
         votingReady ? (
           <div className="action-banner">
-            <span>Tap a player to vote · {data.voting.timer} left</span>
+            <span>Tap a player to vote · {phaseRemaining !== null ? `${phaseRemaining}s` : data.voting.timer} left</span>
           </div>
         ) : (
           <div className="overlay">
