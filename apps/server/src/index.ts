@@ -231,6 +231,11 @@ const getOriginalRole = (state: GameState, playerId: string): Role | undefined =
 const getCurrentRole = (state: GameState, playerId: string): Role | undefined =>
   state.roles?.currentRolesByPlayer[playerId];
 
+const getDopplegangerCopiedRole = (state: GameState, playerId: string): Role | undefined => {
+  const copied = state.night?.copiedRoleByPlayer?.[playerId];
+  return copied ?? undefined;
+};
+
 const eligiblePlayersForNightRole = (state: GameState, role: Role): string[] => {
   if (!state.roles) return [];
   return Object.entries(state.roles.originalRolesByPlayer)
@@ -238,8 +243,18 @@ const eligiblePlayersForNightRole = (state: GameState, role: Role): string[] => 
     .map(([playerId]) => playerId);
 };
 
+const eligiblePlayersForNightStepRole = (state: GameState, role: Role): string[] => {
+  const base = eligiblePlayersForNightRole(state, role);
+  if (!state.night) return base;
+  if (!["werewolf", "minion", "mason"].includes(role)) return base;
+  const copied = Object.entries(state.night.copiedRoleByPlayer ?? {})
+    .filter(([playerId, copiedRole]) => copiedRole === role && getOriginalRole(state, playerId) === "doppleganger")
+    .map(([playerId]) => playerId);
+  return [...new Set([...base, ...copied])];
+};
+
 const isPlayerAloneWerewolf = (state: GameState, playerId: string): boolean => {
-  const wolves = eligiblePlayersForNightRole(state, "werewolf");
+  const wolves = eligiblePlayersForNightStepRole(state, "werewolf");
   return wolves.length === 1 && wolves[0] === playerId;
 };
 
@@ -580,9 +595,8 @@ const scheduleVotingAutoReveal = (record: GameRecord) => {
 };
 
 const queueParallelInfoResults = (record: GameRecord) => {
-  const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+  const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
   wolves.forEach((wolfId) => {
-    if (record.pendingParallelViews.has(wolfId)) return;
     if (isPlayerAloneWerewolf(record.state, wolfId)) {
       record.pendingParallelViews.set(wolfId, { kind: "werewolfSoloStatus", isSolo: true });
     } else {
@@ -593,15 +607,13 @@ const queueParallelInfoResults = (record: GameRecord) => {
     }
   });
 
-  const minions = eligiblePlayersForNightRole(record.state, "minion");
+  const minions = eligiblePlayersForNightStepRole(record.state, "minion");
   minions.forEach((minionId) => {
-    if (record.pendingParallelViews.has(minionId)) return;
     record.pendingParallelViews.set(minionId, { kind: "minionSawWerewolves", werewolfIds: wolves });
   });
 
-  const masons = eligiblePlayersForNightRole(record.state, "mason");
+  const masons = eligiblePlayersForNightStepRole(record.state, "mason");
   masons.forEach((masonId) => {
-    if (record.pendingParallelViews.has(masonId)) return;
     record.pendingParallelViews.set(masonId, {
       kind: "masonSawMasons",
       masonIds: masons.filter((id) => id !== masonId),
@@ -619,7 +631,7 @@ const startNight = (record: GameRecord) => {
   const emitInfoForStepRole = (stepRole: Role | null) => {
     if (!stepRole) return;
     if (stepRole === "werewolf") {
-      const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+      const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
       wolves.forEach((wolfId) => {
         if (isPlayerAloneWerewolf(record.state, wolfId)) {
           const view: PrivateView = { kind: "werewolfSoloStatus", isSolo: true };
@@ -634,15 +646,15 @@ const startNight = (record: GameRecord) => {
       });
     }
     if (stepRole === "minion") {
-      const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
-      eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+      const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
+      eligiblePlayersForNightStepRole(record.state, "minion").forEach((minionId) => {
         const view: PrivateView = { kind: "minionSawWerewolves", werewolfIds: wolves };
         record.privateViews.set(minionId, view);
         emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
       });
     }
     if (stepRole === "mason") {
-      const masons = eligiblePlayersForNightRole(record.state, "mason");
+      const masons = eligiblePlayersForNightStepRole(record.state, "mason");
       masons.forEach((masonId) => {
         const view: PrivateView = {
           kind: "masonSawMasons",
@@ -665,6 +677,7 @@ const startNight = (record: GameRecord) => {
       stepRole: null,
       totalSteps: record.nightSteps.length,
       completionByPlayer,
+      copiedRoleByPlayer: Object.fromEntries(record.state.playerOrder.map((id) => [id, null])),
       endsAt: Date.now() + getNightStepMs(record),
       mode: "parallel",
     };
@@ -685,7 +698,7 @@ const startNight = (record: GameRecord) => {
     const stepRole = record.nightSteps[0] ?? null;
     const completionByPlayer: Record<string, boolean> = {};
     if (stepRole) {
-      eligiblePlayersForNightRole(record.state, stepRole).forEach((id) => {
+      eligiblePlayersForNightStepRole(record.state, stepRole).forEach((id) => {
         completionByPlayer[id] = false;
       });
     }
@@ -694,6 +707,7 @@ const startNight = (record: GameRecord) => {
       stepRole,
       totalSteps: record.nightSteps.length,
       completionByPlayer,
+      copiedRoleByPlayer: Object.fromEntries(record.state.playerOrder.map((id) => [id, null])),
       endsAt: Date.now() + getNightStepMs(record),
       mode: "sequential",
     };
@@ -751,7 +765,7 @@ const advanceNightStep = (record: GameRecord) => {
 
   const stepRole = record.nightSteps[nextIndex];
   const completionByPlayer: Record<string, boolean> = {};
-  eligiblePlayersForNightRole(record.state, stepRole).forEach((id) => {
+  eligiblePlayersForNightStepRole(record.state, stepRole).forEach((id) => {
     completionByPlayer[id] = false;
   });
   record.state.night = {
@@ -759,6 +773,7 @@ const advanceNightStep = (record: GameRecord) => {
     stepRole,
     totalSteps: record.nightSteps.length,
     completionByPlayer,
+    copiedRoleByPlayer: record.state.night.copiedRoleByPlayer,
     endsAt: Date.now() + getNightStepMs(record),
     mode: "sequential",
   };
@@ -773,7 +788,7 @@ const advanceNightStep = (record: GameRecord) => {
     }, getNightStepMs(record));
   }
   if (stepRole === "werewolf") {
-    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
+    const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
     wolves.forEach((wolfId) => {
       if (isPlayerAloneWerewolf(record.state, wolfId)) {
         const view: PrivateView = { kind: "werewolfSoloStatus", isSolo: true };
@@ -788,15 +803,15 @@ const advanceNightStep = (record: GameRecord) => {
     });
   }
   if (stepRole === "minion") {
-    const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
-    eligiblePlayersForNightRole(record.state, "minion").forEach((minionId) => {
+    const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
+    eligiblePlayersForNightStepRole(record.state, "minion").forEach((minionId) => {
       const view: PrivateView = { kind: "minionSawWerewolves", werewolfIds: wolves };
       record.privateViews.set(minionId, view);
       emitPrivate(record, minionId, "MINION_SAW_WEREWOLVES", { werewolfIds: wolves });
     });
   }
   if (stepRole === "mason") {
-    const masons = eligiblePlayersForNightRole(record.state, "mason");
+    const masons = eligiblePlayersForNightStepRole(record.state, "mason");
     masons.forEach((masonId) => {
       const view: PrivateView = {
         kind: "masonSawMasons",
@@ -831,8 +846,16 @@ const validateNightAction = (
   if (!record.state.night || !record.state.roles) return "Night not active";
   if (record.state.night.completionByPlayer[playerId]) return "Already completed";
 
-  const role = getOriginalRole(record.state, playerId);
-  if (!role) return "Missing role";
+  const originalRole = getOriginalRole(record.state, playerId);
+  if (!originalRole) return "Missing role";
+  const copiedRole = originalRole === "doppleganger" ? getDopplegangerCopiedRole(record.state, playerId) : undefined;
+  if (action.kind === "dopplegangerCopy" && copiedRole) return "Already copied a role";
+  const actingRole =
+    action.kind === "dopplegangerCopy"
+      ? originalRole
+      : originalRole === "doppleganger" && copiedRole
+      ? copiedRole
+      : originalRole;
 
   const allowedByRole: Record<string, Role[]> = {
     done: [
@@ -859,12 +882,12 @@ const validateNightAction = (
   };
 
   const allowed = allowedByRole[action.kind];
-  if (!allowed || !allowed.includes(role)) return "Not allowed for your role";
+  if (!allowed || !allowed.includes(actingRole)) return "Not allowed for your role";
 
   if (record.state.night.mode === "sequential") {
     const stepRole = record.state.night.stepRole;
     if (!stepRole) return "Night step missing";
-    const eligible = eligiblePlayersForNightRole(record.state, stepRole);
+    const eligible = eligiblePlayersForNightStepRole(record.state, stepRole);
     if (!eligible.includes(playerId)) return "Not your night step";
   }
 
@@ -889,6 +912,9 @@ const validateNightAction = (
   if (action.kind === "dopplegangerCopy" && !record.state.playersById[action.targetPlayerId]) {
     return "Target missing";
   }
+  if (action.kind === "dopplegangerCopy" && action.targetPlayerId === playerId) {
+    return "Cannot copy self";
+  }
   if (action.kind === "seerViewCenter") {
     const [a, b] = action.centerIndices;
     if (a === b) return "Center indices must differ";
@@ -902,6 +928,10 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
   const mode = record.state.night.mode ?? "sequential";
   const stepRole = mode === "parallel" ? getOriginalRole(record.state, playerId) : record.state.night.stepRole;
   if (!stepRole) return null;
+  const originalRole = getOriginalRole(record.state, playerId);
+  if (!originalRole) return null;
+  const copiedRole = originalRole === "doppleganger" ? getDopplegangerCopiedRole(record.state, playerId) : undefined;
+  const actingRole = originalRole === "doppleganger" && copiedRole ? copiedRole : originalRole;
 
   const markComplete = () => {
     if (record.state.night?.completionByPlayer[playerId] !== undefined) {
@@ -923,18 +953,28 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
     case "dopplegangerCopy": {
       const targetRole = getOriginalRole(record.state, action.targetPlayerId);
       if (!targetRole) return null;
+      if (action.targetPlayerId === playerId) return null;
+      if (record.state.night.copiedRoleByPlayer) {
+        record.state.night.copiedRoleByPlayer[playerId] = targetRole;
+      }
       record.state.roles.currentRolesByPlayer[playerId] = targetRole;
       if (targetRole === "insomniac") {
         record.dopplegangerInsomniac.add(playerId);
       }
-      markComplete();
+      const copiedRoleNeedsImmediateAction = ["seer", "robber", "troublemaker", "drunk"].includes(targetRole);
+      if (!copiedRoleNeedsImmediateAction) {
+        markComplete();
+      }
       {
-        const view: PrivateView = { kind: "dopplegangerCopiedRole", role: targetRole };
+        const view: PrivateView = copiedRoleNeedsImmediateAction
+          ? { kind: "dopplegangerActAsRole", role: targetRole }
+          : { kind: "dopplegangerCopiedRole", role: targetRole };
         setPlayerView(view);
         return view;
       }
     }
     case "werewolfSoloPeek": {
+      if (actingRole !== "werewolf") return null;
       if (!isPlayerAloneWerewolf(record.state, playerId)) return null;
       const role = record.state.roles.centerRoles[action.centerIndex];
       markComplete();
@@ -945,6 +985,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "seerViewPlayer": {
+      if (actingRole !== "seer") return null;
       const role = getCurrentRole(record.state, action.targetPlayerId);
       if (!role) return null;
       markComplete();
@@ -955,6 +996,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "seerViewCenter": {
+      if (actingRole !== "seer") return null;
       const [a, b] = action.centerIndices;
       if (a === b) return null;
       markComplete();
@@ -971,6 +1013,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "robberSwap": {
+      if (actingRole !== "robber") return null;
       if (playerId === action.targetPlayerId) return null;
       const newRole = applyRobberSwap(record.state, playerId, action.targetPlayerId);
       if (!newRole) return null;
@@ -982,6 +1025,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "drunkSwap": {
+      if (actingRole !== "drunk") return null;
       applyDrunkSwap(record.state, playerId, action.centerIndex);
       markComplete();
       {
@@ -991,6 +1035,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "troublemakerSwap": {
+      if (actingRole !== "troublemaker") return null;
       const [a, b] = action.targetPlayerIds;
       if (a === b) return null;
       if (!record.state.playersById[a] || !record.state.playersById[b]) return null;
@@ -1003,6 +1048,7 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       }
     }
     case "insomniacPeek": {
+      if (actingRole !== "insomniac") return null;
       const role = getCurrentRole(record.state, playerId);
       if (!role) return null;
       markComplete();

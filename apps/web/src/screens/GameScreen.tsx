@@ -260,6 +260,11 @@ export function GameScreen({
     if (roleKey === "werewolf") {
       return data.night.selectableCardIds ?? [];
     }
+    if (roleKey === "doppleganger") {
+      return data.board.cards
+        .filter((card) => card.type === "player" && card.id !== data.board.playerId)
+        .map((card) => card.id);
+    }
     return [];
   }, [data, nightActionPending, nightActionState, nightSelections, roleKey]);
 
@@ -308,6 +313,16 @@ export function GameScreen({
     if (!card) return;
     if (!computedSelectable.includes(cardId)) return;
 
+    if (roleKey === "doppleganger" && card.type === "player") {
+      try {
+        await submitNightAction({ kind: "dopplegangerCopy", targetPlayerId: cardId });
+        setNightSelections({ players: [cardId], centers: [] });
+        markNightActionConfirmed();
+      } catch {
+        // Error is surfaced via nightActionError state.
+      }
+      return;
+    }
     if (roleKey === "werewolf" && card.type === "center") {
       const centerIndex = Number(cardId.replace("center-", ""));
       if (!Number.isNaN(centerIndex)) {
@@ -401,7 +416,7 @@ export function GameScreen({
     roleKey === "werewolf" && (data.night.selectableCardIds?.length ?? 0) > 0;
   const werewolfPartnerKnown = roleKey === "werewolf" && (data.night.blinkCardIds?.length ?? 0) > 0;
   const roleNeedsSelection =
-    ["seer", "robber", "troublemaker", "drunk"].includes(roleKey) || werewolfCanSoloPeek;
+    ["doppleganger", "seer", "robber", "troublemaker", "drunk"].includes(roleKey) || werewolfCanSoloPeek;
   const roleHasNoSelection =
     roleKey === "minion" || roleKey === "mason" || (roleKey === "werewolf" && !werewolfCanSoloPeek);
   const showNoTapHint = roleHasNoSelection && roleKey !== "minion";
@@ -484,6 +499,14 @@ export function GameScreen({
       markNightActionConfirmed();
     }
   }, [data.phase, roleKey, nightActionState, werewolfCanSoloPeek, werewolfPartnerKnown]);
+
+  useEffect(() => {
+    if (data.phase !== "night") return;
+    if ((data.night.step ?? "").toLowerCase() !== "doppleganger") return;
+    if (nightActionState !== "confirmed") return;
+    if (!["seer", "robber", "troublemaker", "drunk"].includes(roleKey)) return;
+    setNightActionState("selecting");
+  }, [data.phase, data.night.step, nightActionState, roleKey]);
 
   useEffect(() => {
     if (!showRoleModal) return;

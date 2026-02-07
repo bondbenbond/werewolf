@@ -64,6 +64,7 @@ export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: string }
   | { kind: "dopplegangerCopiedRole"; role: string }
+  | { kind: "dopplegangerActAsRole"; role: string }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }

@@ -97,6 +97,7 @@ export type NightState = {
   stepRole: Role | null;
   totalSteps: number;
   completionByPlayer: Record<string, boolean>;
+  copiedRoleByPlayer?: Record<string, Role | null>;
   endsAt?: number;
   mode?: "sequential" | "parallel";
   actionLog?: NightActionLogEntry[];
@@ -144,6 +145,7 @@ export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: Role }
   | { kind: "dopplegangerCopiedRole"; role: Role }
+  | { kind: "dopplegangerActAsRole"; role: Role }
   | { kind: "minionSawWerewolves"; werewolfIds: string[] }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }

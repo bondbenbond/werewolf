@@ -233,6 +233,23 @@ const buildRoleInstruction = (
     return `Your final role is ${roleLabels[privateView.role] ?? privateView.role}.`;
   }
 
+  if (roleKey === "doppleganger") {
+    if (privateView?.kind === "dopplegangerCopiedRole") {
+      const copied = roleLabels[privateView.role] ?? privateView.role;
+      if (["werewolf", "minion", "mason"].includes(privateView.role)) {
+        return `You copied ${copied}. Wait for that role's step.`;
+      }
+      if (privateView.role === "insomniac") {
+        return "You copied Insomniac. You'll see your final role at the end of night.";
+      }
+      return `You copied ${copied}.`;
+    }
+    if (privateView?.kind === "dopplegangerActAsRole") {
+      const copied = roleLabels[privateView.role] ?? privateView.role;
+      return `You copied ${copied}. Perform that action now.`;
+    }
+  }
+
   return roleInstructions[roleKey] ?? roleInstructions.villager;
 };
 
@@ -285,6 +302,8 @@ const buildResultLines = (
       return [`Your final role is ${roleLabel(privateView.role)}.`];
     case "dopplegangerCopiedRole":
       return [`You copied ${roleLabel(privateView.role)}.`];
+    case "dopplegangerActAsRole":
+      return [`You copied ${roleLabel(privateView.role)} and acted as that role.`];
     default:
       return roleKey ? [buildRoleInstruction(roleKey, privateView, playerNameById, isParallelForFallback)] : [];
   }
@@ -307,8 +326,11 @@ const roleFromPrivateView = (view?: PrivateView) => {
   if (!view) return null;
   switch (view.kind) {
     case "yourOriginalRole":
-    case "dopplegangerCopiedRole":
       return view.role;
+    case "dopplegangerActAsRole":
+      return view.role;
+    case "dopplegangerCopiedRole":
+      return "doppleganger";
     case "robberNewRole":
       return "robber";
     case "insomniacFinalRole":
