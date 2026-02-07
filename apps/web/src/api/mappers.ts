@@ -114,6 +114,49 @@ const roleInstructions: Record<string, string> = {
   villager: "No action. Keep eyes closed.",
 };
 
+const buildRoleInstruction = (roleKey: string, privateView?: PrivateView) => {
+  if (roleKey === "werewolf") {
+    if (privateView?.kind === "werewolfSoloStatus" && privateView.isSolo) {
+      return "You are alone. Look at one highlighted center card.";
+    }
+    if (privateView?.kind === "werewolfSawWerewolves") {
+      return "Find the highlighted werewolf card.";
+    }
+  }
+
+  if (roleKey === "minion" && privateView?.kind === "minionSawWerewolves") {
+    return "Werewolves are highlighted. Remember them before discussion.";
+  }
+
+  if (roleKey === "mason" && privateView?.kind === "masonSawMasons") {
+    return "Other masons are highlighted.";
+  }
+
+  if (roleKey === "seer") {
+    if (privateView?.kind === "seerViewPlayer" || privateView?.kind === "seerViewCenter") {
+      return "Vision complete. Memorize what you saw.";
+    }
+    return "Select one player card or two center cards.";
+  }
+
+  if (roleKey === "robber") {
+    if (privateView?.kind === "robberNewRole") {
+      return "Swap complete. Your revealed card is your new role.";
+    }
+    return "Select a player card to swap with.";
+  }
+
+  if (roleKey === "troublemaker") {
+    return "Select two other player cards to swap.";
+  }
+
+  if (roleKey === "drunk") {
+    return "Select one center card to swap with.";
+  }
+
+  return roleInstructions[roleKey] ?? roleInstructions.villager;
+};
+
 const formatSeconds = (seconds: number) => {
   const safe = Math.max(0, Math.round(seconds));
   const mins = Math.floor(safe / 60);
@@ -243,7 +286,7 @@ export const mapGameData = (
   const nextStepRole = state.night?.nextStepRole ?? null;
   const stepLabel = roleLabels[stepRole] ?? "Night";
   const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
-  const roleInstruction = roleInstructions[roleKey] ?? roleInstructions.villager;
+  const roleInstruction = buildRoleInstruction(roleKey, privateView);
   const nightWaiting =
     state.night?.mode === "parallel"
       ? false

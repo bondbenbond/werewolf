@@ -2467,8 +2467,10 @@ input[type="number"] {
 
 .board-shell {
   min-height: 100svh;
+  height: 100svh;
   padding: clamp(6px, 2vw, 18px);
   position: relative;
+  overflow: hidden;
 }
 
 .board-top {
@@ -2476,8 +2478,8 @@ input[type="number"] {
   justify-content: center;
   align-items: center;
   margin-bottom: clamp(6px, 1.4vw, 10px);
-  position: sticky;
-  top: calc(6px + env(safe-area-inset-top, 0px));
+  position: relative;
+  top: 0;
   z-index: 12;
 }
 

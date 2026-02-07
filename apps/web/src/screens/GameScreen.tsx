@@ -143,6 +143,10 @@ export function GameScreen({
   }, [data.board.phaseEndsAt]);
 
   useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [data.phase]);
+
+  useEffect(() => {
     if (data.phase !== "night") {
       setNightSelections({ players: [], centers: [] });
       setNightActionState("idle");
@@ -266,6 +270,7 @@ export function GameScreen({
   const showNightWaitingModal = data.phase === "night" && !!data.night.waiting;
   const showNightStartModal =
     data.phase === "night" && !data.night.waiting && roleNeedsSelection && nightActionState === "idle";
+  const showNightHintBanner = data.phase === "night" && !showNightStartModal && !showNightWaitingModal;
   const hostNextAction = useMemo(() => {
     if (data.phase === "deal") {
       return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
@@ -367,16 +372,6 @@ export function GameScreen({
         }
       />
 
-      {data.phase === "deal" && dealCountdown !== null && dealCountdown > 0 ? (
-        <div className="overlay">
-          <div className="overlay-card action-card">
-            <p className="eyebrow">Game starting</p>
-            <h3>Host started the game</h3>
-            <p className="lede">Dealing in {dealCountdown}s</p>
-          </div>
-        </div>
-      ) : null}
-
       {data.phase === "nightCountdown" ? (
         <div className="overlay">
           <div className="overlay-card action-card">
@@ -389,7 +384,7 @@ export function GameScreen({
         </div>
       ) : null}
 
-      {data.phase === "night" ? (
+      {showNightHintBanner ? (
         <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
           <span>
             {data.night.waiting
