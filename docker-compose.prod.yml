@@ -3,6 +3,8 @@ version: "3.9"
 services:
   web:
     container_name: werewolf-web
+    volumes:
+      - ./env.web.prod.json:/usr/share/nginx/html/assets/env.json:ro
     networks:
       caddy-net:
         aliases:
