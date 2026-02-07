@@ -1,10 +1,20 @@
 import { useRef, useState } from "react";
+import { useApiEnv } from "../api/ApiContext";
+import { createGame, joinGame } from "../api/client";
+import { persistSession, type SessionInfo } from "../api/session";
 
-export function HomeScreen() {
+type HomeScreenProps = {
+  onSession?: (session: SessionInfo) => void;
+};
+
+export function HomeScreen({ onSession }: HomeScreenProps) {
+  const env = useApiEnv();
   const [playerName, setPlayerName] = useState("");
   const [nameError, setNameError] = useState(false);
   const [pin, setPin] = useState<string[]>(Array.from({ length: 6 }, () => ""));
   const [modal, setModal] = useState<"how" | "rules" | null>(null);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const closeModal = () => setModal(null);
   const pinRefs = useRef<Array<HTMLInputElement | null>>([]);
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -13,30 +23,42 @@ export function HomeScreen() {
     next[index] = value;
     setPin(next);
   };
-  const handlePinChange = (index: number, value: string) => {
+  const handlePinChange = async (index: number, value: string) => {
     const digit = value.replace(/[^0-9]/g, "").slice(0, 1);
-    setPinDigit(index, digit);
+    const next = [...pin];
+    next[index] = digit;
+    setPin(next);
     if (digit && pinRefs.current[index + 1]) {
       pinRefs.current[index + 1]?.focus();
     }
     if (digit && index === pin.length - 1) {
-      // Join action would trigger here once wired to API.
+      await attemptJoin(next);
     }
   };
   const handlePinKeyDown = (index: number, event: React.KeyboardEvent<HTMLInputElement>) => {
     if (/^[0-9]$/.test(event.key)) {
-      setPinDigit(index, event.key);
+      const next = [...pin];
+      next[index] = event.key;
+      setPin(next);
       if (pinRefs.current[index + 1]) {
         pinRefs.current[index + 1]?.focus();
       }
+      if (index === pin.length - 1) {
+        void attemptJoin(next);
+      }
       event.preventDefault();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void attemptJoin();
       return;
     }
     if (event.key === "Backspace" && !pin[index] && pinRefs.current[index - 1]) {
       pinRefs.current[index - 1]?.focus();
     }
   };
-  const handlePinPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+  const handlePinPaste = async (event: React.ClipboardEvent<HTMLInputElement>) => {
     const text = event.clipboardData.getData("text").replace(/[^0-9]/g, "");
     if (!text) return;
     const next = Array.from({ length: 6 }, (_, idx) => text[idx] ?? "");
@@ -45,6 +67,7 @@ export function HomeScreen() {
     if (nextIndex >= 0) {
       pinRefs.current[nextIndex]?.focus();
     }
+    await attemptJoin(next);
     event.preventDefault();
   };
 
@@ -59,6 +82,57 @@ export function HomeScreen() {
       return false;
     }
     return true;
+  };
+
+  const storeSession = (session: SessionInfo) => {
+    persistSession(session);
+    onSession?.(session);
+  };
+
+  const attemptJoin = async (nextPin: string[] = pin) => {
+    if (submitting) return;
+    if (!requireName()) return;
+    const code = nextPin.join("");
+    if (code.length !== 6 || nextPin.some((digit) => !digit)) {
+      return;
+    }
+    setSubmitting(true);
+    setApiError(null);
+    try {
+      const response = await joinGame(env, code, playerName.trim());
+      storeSession({
+        gameId: code,
+        playerId: response.playerId,
+        secret: response.secret,
+        name: response.name,
+        isHost: false,
+      });
+    } catch (error) {
+      setApiError((error as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const attemptCreate = async () => {
+    if (submitting) return;
+    if (!requireName()) return;
+    setSubmitting(true);
+    setApiError(null);
+    try {
+      const response = await createGame(env, playerName.trim());
+      storeSession({
+        gameId: response.gameId,
+        playerId: response.host.playerId,
+        secret: response.host.secret,
+        name: response.host.name,
+        isHost: true,
+      });
+    } catch (error) {
+      setApiError((error as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -84,11 +158,19 @@ export function HomeScreen() {
               if (event.target.value.trim()) {
                 setNameError(false);
               }
+              if (apiError) {
+                setApiError(null);
+              }
             }}
           />
           {nameError ? (
             <p className="micro error-text" role="alert">
               Name is required to continue.
+            </p>
+          ) : null}
+          {apiError ? (
+            <p className="micro error-text" role="alert">
+              {apiError}
             </p>
           ) : null}
         </div>
@@ -112,6 +194,7 @@ export function HomeScreen() {
               }
             }
           }}
+          aria-disabled={submitting}
         >
           <h3>Join a game</h3>
           <p className="micro">Have a room code? Jump right in.</p>
@@ -140,12 +223,12 @@ export function HomeScreen() {
           role="button"
           tabIndex={0}
           onClick={() => {
-            requireName();
+            attemptCreate();
           }}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " ") {
               event.preventDefault();
-              requireName();
+              attemptCreate();
             }
           }}
         >

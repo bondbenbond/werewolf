@@ -5,7 +5,7 @@ type LobbyData = {
   roomCode: string;
   gameName?: string;
   shareUrl: string;
-  players: Array<{ name: string; connected: boolean; ready: boolean; host?: boolean }>;
+  players: Array<{ playerId?: string; name: string; connected: boolean; ready: boolean; host?: boolean }>;
   roles: Array<{ name: string; count: number }>;
   settings: {
     autoAdvance: boolean;
@@ -18,7 +18,29 @@ type LobbyData = {
   showCountdownOverlay?: boolean;
 };
 
-export function LobbyHostScreen({ data }: { data: LobbyData }) {
+type LobbyHostScreenProps = {
+  data: LobbyData;
+  onRolesChange?: (roles: string[]) => void;
+  onSaveSettings?: (settings: {
+    autoAdvance: boolean;
+    parallelNight: boolean;
+    nightStepSeconds: number;
+    discussionSeconds: number;
+    votingSeconds: number;
+  }) => void;
+  onStartGame?: () => void;
+  onEndGame?: () => void;
+  onKickPlayer?: (playerId: string) => void;
+};
+
+export function LobbyHostScreen({
+  data,
+  onRolesChange,
+  onSaveSettings,
+  onStartGame,
+  onEndGame,
+  onKickPlayer,
+}: LobbyHostScreenProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [savedSettings, setSavedSettings] = useState(data.settings);
@@ -44,10 +66,21 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
       const current = prev[name] ?? 0;
       const total = data.roles.reduce((sum, role) => sum + (prev[role.name] ?? 0), 0);
       const required = rolesRequired;
-      if (current + step > max) return { ...prev, [name]: 0 };
-      if (total + step > required) return prev;
       const next = current + step > max ? 0 : current + step;
-      return { ...prev, [name]: next };
+      if (next > current && total + step > required) return prev;
+      if (next === current) return prev;
+      const updated = { ...prev, [name]: next };
+      if (onRolesChange) {
+        const roles: string[] = [];
+        data.roles.forEach((role) => {
+          const count = updated[role.name] ?? 0;
+          for (let i = 0; i < count; i += 1) {
+            roles.push(role.name);
+          }
+        });
+        onRolesChange(roles);
+      }
+      return updated;
     });
   };
   const roleTotal = data.roles.reduce((sum, role) => sum + (roleCounts[role.name] ?? 0), 0);
@@ -55,9 +88,22 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
   const rolesComplete = roleTotal === rolesRequired;
   const roleTimerOptions = [5, 10, 15, 20, 25, 30];
   const discussionMinuteOptions = [2, 3, 4, 5, 6, 8, 10, 12, 15];
+  const shareUrl = data.shareUrl || `${window.location.origin}/?game=${data.roomCode}`;
   const copyLink = async () => {
     try {
-      await navigator.clipboard?.writeText(data.shareUrl);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = shareUrl;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
       setCopyStatus("copied");
       window.setTimeout(() => setCopyStatus("idle"), 1400);
     } catch {
@@ -88,6 +134,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
     setSavedSettings(settings);
     setActiveHelp(null);
     setSettingsOpen(false);
+    onSaveSettings?.(settings);
   };
   return (
     <div className="lobby-shell">
@@ -155,7 +202,7 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
           </div>
           <div className="players-list">
             {data.players.map((player) => (
-              <div key={player.name} className="player-row">
+              <div key={player.playerId ?? player.name} className="player-row">
                 <div>
                   <strong>
                     {player.name}
@@ -169,7 +216,16 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
                   </div>
                 </div>
                 <div className="player-actions">
-                  <button className="kick-button" type="button">
+                  <button
+                    className="kick-button"
+                    type="button"
+                    onClick={() => {
+                      if (player.playerId) {
+                        onKickPlayer?.(player.playerId);
+                      }
+                    }}
+                    disabled={!onKickPlayer || !player.playerId || player.host}
+                  >
                     Kick
                   </button>
                 </div>
@@ -180,10 +236,16 @@ export function LobbyHostScreen({ data }: { data: LobbyData }) {
       </div>
 
       <div className="cta-row">
-        <Button variant="success" disabled={!rolesComplete}>
+        <Button
+          variant="success"
+          disabled={!rolesComplete || !onStartGame}
+          onClick={() => onStartGame?.()}
+        >
           Start game
         </Button>
-        <Button variant="ghost">End game</Button>
+        <Button variant="ghost" onClick={() => onEndGame?.()} disabled={!onEndGame}>
+          End game
+        </Button>
       </div>
 
       {typeof data.startCountdownSeconds === "number" && data.showCountdownOverlay !== false ? (

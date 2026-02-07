@@ -374,6 +374,49 @@ const computeWinners = (state: GameState, eliminatedPlayerIds: string[]): Reveal
   return "werewolves";
 };
 
+const removePlayerFromState = (record: GameRecord, playerId: string) => {
+  const state = record.state;
+  delete state.playersById[playerId];
+  state.playerOrder = state.playerOrder.filter((id) => id !== playerId);
+  if (state.deal?.ackByPlayer) {
+    delete state.deal.ackByPlayer[playerId];
+  }
+  if (state.night?.completionByPlayer) {
+    delete state.night.completionByPlayer[playerId];
+  }
+  if (state.tokens) {
+    delete state.tokens.tokensByPlayer[playerId];
+    delete state.tokens.suspectRolesByPlayer[playerId];
+    Object.values(state.tokens.tokensByPlayer).forEach((targets) => {
+      delete targets[playerId];
+    });
+    Object.values(state.tokens.suspectRolesByPlayer).forEach((suspects) => {
+      delete suspects[playerId];
+    });
+  }
+  if (state.voting?.votesByPlayer) {
+    delete state.voting.votesByPlayer[playerId];
+    Object.keys(state.voting.votesByPlayer).forEach((voterId) => {
+      if (state.voting?.votesByPlayer[voterId] === playerId) {
+        state.voting.votesByPlayer[voterId] = null;
+      }
+    });
+  }
+  record.secrets.delete(playerId);
+  record.privateViews.delete(playerId);
+  const streams = record.privateStreams.get(playerId);
+  if (streams) {
+    streams.forEach((stream) => {
+      try {
+        stream.end();
+      } catch {
+        // ignore
+      }
+    });
+    record.privateStreams.delete(playerId);
+  }
+};
+
 const startNight = (record: GameRecord) => {
   record.nightSteps = buildNightSteps(record.state);
   if (record.state.settings.parallelNight) {
@@ -682,7 +725,7 @@ app.post(
     hostPlayerId: hostId,
     maxPlayers: 10,
     playersById: {
-      [hostId]: { playerId: hostId, name: hostName, connected: true, ready: false },
+      [hostId]: { playerId: hostId, name: hostName, connected: true, ready: true },
     },
     playerOrder: [hostId],
     settings: { ...DEFAULT_SETTINGS },
@@ -848,6 +891,7 @@ app.post(
       return reply.code(400).send({ error: "INVALID_ROLES", message: "Role selection invalid" });
     }
     record.state.phase = "deal";
+    record.state.phaseEndsAt = Date.now() + 5_000;
     record.state.deal = {
       ackByPlayer: Object.fromEntries(record.state.playerOrder.map((id) => [id, false])),
     };
@@ -871,6 +915,9 @@ app.post(
     if (!record.state.deal.ackByPlayer[body.playerId]) {
       record.state.deal.ackByPlayer[body.playerId] = true;
       record.state.updatedAt = Date.now();
+    }
+    if (Object.values(record.state.deal.ackByPlayer).every(Boolean)) {
+      record.state.phaseEndsAt = undefined;
     }
   }
 
@@ -999,6 +1046,34 @@ app.post(
     record.state.voting = resetVoting(record.state);
     record.state.phaseEndsAt = Date.now() + 20_000;
     record.state.updatedAt = Date.now();
+  }
+
+  if (commandType === "LEAVE_GAME") {
+    if (isHost) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host cannot leave the game" });
+    }
+    if (!record.state.playersById[body.playerId]) {
+      return reply.code(404).send({ error: "PLAYER_NOT_FOUND", message: "Player not found" });
+    }
+    removePlayerFromState(record, body.playerId);
+    record.state.updatedAt = Date.now();
+    appendEvent(record, "PLAYER_LEFT", { playerId: body.playerId });
+  }
+
+  if (commandType === "KICK_PLAYER") {
+    if (!isHost || record.state.phase !== "lobby") {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
+    }
+    const targetPlayerId = (body.command as any).payload?.playerId as string | undefined;
+    if (!targetPlayerId || !record.state.playersById[targetPlayerId]) {
+      return reply.code(404).send({ error: "PLAYER_NOT_FOUND", message: "Player not found" });
+    }
+    if (targetPlayerId === record.state.hostPlayerId) {
+      return reply.code(400).send({ error: "NOT_ALLOWED", message: "Cannot kick host" });
+    }
+    removePlayerFromState(record, targetPlayerId);
+    record.state.updatedAt = Date.now();
+    appendEvent(record, "PLAYER_KICKED", { playerId: targetPlayerId });
   }
 
   if (commandType === "SUBMIT_VOTE") {
@@ -1183,10 +1258,13 @@ app.get(
     return reply.code(410).send({ error: "HISTORY_EXPIRED", message: "History expired" });
   }
 
+  const origin = request.headers.origin ?? "*";
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    "Access-Control-Allow-Origin": origin,
+    Vary: "Origin",
   });
 
   record.streams.add(reply.raw);

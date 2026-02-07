@@ -322,6 +322,11 @@ export type LockVotesCommand = {
 
 export type RevealResultsCommand = { type: "REVEAL_RESULTS" };
 export type ResetGameCommand = { type: "RESET_GAME" };
+export type LeaveGameCommand = { type: "LEAVE_GAME" };
+export type KickPlayerCommand = {
+  type: "KICK_PLAYER";
+  payload: { playerId: string };
+};
 
 export type Command =
   | SetReadyCommand
@@ -339,7 +344,9 @@ export type Command =
   | SubmitVoteCommand
   | LockVotesCommand
   | RevealResultsCommand
-  | ResetGameCommand;
+  | ResetGameCommand
+  | LeaveGameCommand
+  | KickPlayerCommand;
 
 export type CommandResponse = {
   accepted: boolean;

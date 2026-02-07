@@ -7,6 +7,11 @@ import { GameScreen } from "../screens/GameScreen";
 import { GameBoardScreen, type GameBoardDevHandle } from "../screens/GameBoardScreen";
 import { mockData } from "../mocks/mockData";
 import { TopBar } from "../components/TopBar";
+import { useLiveGame } from "../api/useLiveGame";
+import { mapGameData, mapLobbyData } from "../api/mappers";
+import { clearSession, readSession, type SessionInfo } from "../api/session";
+import { useApiEnv } from "../api/ApiContext";
+import { sendCommand } from "../api/client";
 
 const screens = ["Home", "LobbyHost", "LobbyPlayer", "Game"] as const;
 
@@ -28,6 +33,61 @@ export function Playground() {
   const [nightActionModal, setNightActionModal] = useState(false);
   const [nightActionActive, setNightActionActive] = useState(false);
   const [gamePhase, setGamePhase] = useState<"deal" | "night" | "discussion" | "voting" | "reveal">("deal");
+  const initialSession = useMemo(() => readSession(), []);
+  const [useLive, setUseLive] = useState(!!initialSession);
+  const [followPhase, setFollowPhase] = useState(true);
+  const [liveGameId, setLiveGameId] = useState(initialSession?.gameId ?? "");
+  const [livePlayerId, setLivePlayerId] = useState(initialSession?.playerId ?? "");
+  const [liveSecret, setLiveSecret] = useState(initialSession?.secret ?? "");
+  const [commandError, setCommandError] = useState<string | null>(null);
+  const env = useApiEnv();
+  const live = useLiveGame({
+    enabled: useLive && liveGameId.trim().length > 0,
+    gameId: liveGameId.trim(),
+    playerId: livePlayerId.trim() || undefined,
+    secret: liveSecret.trim() || undefined,
+  });
+  const liveState = live.snapshot?.state;
+  const liveLobby = liveState ? mapLobbyData(liveState, liveGameId.trim()) : null;
+  const liveGame = liveState ? mapGameData(liveState, live.snapshot?.private, livePlayerId.trim()) : null;
+  const livePhase = liveState?.phase ?? null;
+  const livePhaseRemaining = liveState?.phaseEndsAt
+    ? Math.max(0, Math.ceil((liveState.phaseEndsAt - Date.now()) / 1000))
+    : null;
+  const effectiveIsHost =
+    useLive && liveState ? liveState.hostPlayerId === livePlayerId.trim() : hostView;
+  const resolvedScreen =
+    useLive && liveState && followPhase
+      ? livePhase === "lobby" || (livePhase === "deal" && (livePhaseRemaining ?? 0) > 0)
+        ? effectiveIsHost
+          ? "LobbyHost"
+          : "LobbyPlayer"
+        : "Game"
+      : screen;
+
+  const handleSession = (session: SessionInfo) => {
+    setUseLive(true);
+    setFollowPhase(true);
+    setHostView(session.isHost);
+    setLiveGameId(session.gameId);
+    setLivePlayerId(session.playerId);
+    setLiveSecret(session.secret);
+  };
+
+  const sendLiveCommand = async (command: { type: string; payload?: Record<string, unknown> }) => {
+    if (!useLive || !liveGameId || !livePlayerId || !liveSecret) return;
+    try {
+      setCommandError(null);
+      await sendCommand(env, liveGameId, {
+        playerId: livePlayerId,
+        secret: liveSecret,
+        lastKnownVersion: live.version ?? live.snapshot?.version ?? 0,
+        command,
+      });
+    } catch (error) {
+      setCommandError((error as Error).message);
+    }
+  };
 
   return (
     <div className="page">
@@ -63,6 +123,54 @@ export function Playground() {
                   {hostView ? "Host view" : "Player view"}
                 </button>
               </div>
+            </div>
+            <div className="field">
+              <label>Live server</label>
+              <div className="pill-row">
+                <button className="pill small" type="button" onClick={() => setUseLive((prev) => !prev)}>
+                  {useLive ? "Live data on" : "Live data off"}
+                </button>
+                <button className="pill small" type="button" onClick={() => setFollowPhase((prev) => !prev)}>
+                  {followPhase ? "Follow phase" : "Stay on screen"}
+                </button>
+              </div>
+              <div className="field">
+                <label htmlFor="live-game-id">Game ID</label>
+                <input
+                  id="live-game-id"
+                  className="input"
+                  value={liveGameId}
+                  onChange={(event) => setLiveGameId(event.target.value)}
+                  placeholder="game-id"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="live-player-id">Player ID (optional)</label>
+                <input
+                  id="live-player-id"
+                  className="input"
+                  value={livePlayerId}
+                  onChange={(event) => setLivePlayerId(event.target.value)}
+                  placeholder="player-id"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="live-secret">Secret (optional)</label>
+                <input
+                  id="live-secret"
+                  className="input"
+                  value={liveSecret}
+                  onChange={(event) => setLiveSecret(event.target.value)}
+                  placeholder="secret"
+                />
+              </div>
+              {useLive ? (
+                <div className="micro">
+                  Status: {live.status}
+                  {live.error ? ` · ${live.error}` : ""}
+                  {commandError ? ` · ${commandError}` : ""}
+                </div>
+              ) : null}
             </div>
             {screen === "Game" ? (
               <div className="field">
@@ -290,68 +398,161 @@ export function Playground() {
         ) : null}
       </div>
 
-      {screen === "Home" && <HomeScreen />}
-      {screen === "LobbyHost" && (
+      {resolvedScreen === "Home" && <HomeScreen onSession={handleSession} />}
+      {resolvedScreen === "LobbyHost" && (
         <LobbyHostScreen
           data={{
-            ...data.lobby,
-            startCountdownSeconds: lobbyCountdown ?? data.lobby.startCountdownSeconds ?? null,
-            showCountdownOverlay: showLobbyCountdown,
+            ...(liveLobby ?? data.lobby),
+            startCountdownSeconds: liveLobby
+              ? livePhase === "deal" && (livePhaseRemaining ?? 0) > 0
+                ? livePhaseRemaining
+                : liveLobby.startCountdownSeconds ?? null
+              : lobbyCountdown ?? data.lobby.startCountdownSeconds ?? null,
+            showCountdownOverlay: liveLobby ? true : showLobbyCountdown,
           }}
+          onRolesChange={
+            liveLobby
+              ? (roles) => {
+                  const normalized = roles.map((role) => role.toLowerCase());
+                  sendLiveCommand({ type: "UPDATE_ROLES", payload: { roles: normalized } });
+                }
+              : undefined
+          }
+          onSaveSettings={
+            liveLobby
+              ? (settings) => {
+                  const base = liveState?.settings;
+                  if (!base) return;
+                  sendLiveCommand({
+                    type: "UPDATE_SETTINGS",
+                    payload: {
+                      settings: {
+                        ...base,
+                        autoAdvanceNight: settings.autoAdvance,
+                        parallelNight: settings.parallelNight,
+                        discussionSeconds: settings.discussionSeconds,
+                      },
+                    },
+                  });
+                }
+              : undefined
+          }
+          onStartGame={liveLobby ? () => sendLiveCommand({ type: "START_GAME" }) : undefined}
+          onEndGame={liveLobby ? () => sendLiveCommand({ type: "RESET_GAME" }) : undefined}
+          onKickPlayer={
+            liveLobby ? (playerId) => sendLiveCommand({ type: "KICK_PLAYER", payload: { playerId } }) : undefined
+          }
         />
       )}
-      {screen === "LobbyPlayer" && (
+      {resolvedScreen === "LobbyPlayer" && (
         <LobbyPlayerScreen
           data={{
-            ...data.lobby,
-            startCountdownSeconds: lobbyCountdown ?? data.lobby.startCountdownSeconds ?? null,
-            showCountdownOverlay: showLobbyCountdown,
+            ...(liveLobby ?? data.lobby),
+            startCountdownSeconds: liveLobby
+              ? livePhase === "deal" && (livePhaseRemaining ?? 0) > 0
+                ? livePhaseRemaining
+                : liveLobby.startCountdownSeconds ?? null
+              : lobbyCountdown ?? data.lobby.startCountdownSeconds ?? null,
+            showCountdownOverlay: liveLobby ? true : showLobbyCountdown,
           }}
+          currentPlayerId={liveLobby ? livePlayerId : undefined}
+          onSetReady={liveLobby ? (ready) => sendLiveCommand({ type: "SET_READY", payload: { ready } }) : undefined}
+          onLeave={
+            liveLobby
+              ? () => {
+                  sendLiveCommand({ type: "LEAVE_GAME" }).finally(() => {
+                    clearSession();
+                    window.location.href = "/";
+                  });
+                }
+              : undefined
+          }
         />
       )}
-      {screen === "Game" && (
+      {resolvedScreen === "Game" && (
         <GameScreen
-          isHost={hostView}
-          data={{
-            board: {
-              ...data.board,
-              phaseSecondsRemaining: dealCountdown ?? data.board.phaseSecondsRemaining,
-            },
-            phase: gamePhase,
-            phaseTimer: dealCountdown !== null ? `${dealCountdown}s` : undefined,
-            night: {
-              step: data.night.step,
-              instruction: data.night.instruction,
-              remaining: nightCountdown !== null ? `Night countdown: ${nightCountdown}s` : data.night.remaining,
-              role: nightRole,
-              roleInstruction:
-                nightRole === "Werewolf"
-                  ? "Look for other werewolves. If alone, you may peek one center card."
-                  : nightRole === "Minion"
-                  ? "See the werewolves, then close your eyes."
-                  : nightRole === "Mason"
-                  ? "Look for the other mason."
-                  : nightRole === "Seer"
-                  ? "View one player or two center cards."
-                  : nightRole === "Robber"
-                  ? "Swap with a player and view your new role."
-                  : nightRole === "Troublemaker"
-                  ? "Swap two other players."
-                  : nightRole === "Drunk"
-                  ? "Swap with a center card without looking."
-                  : nightRole === "Insomniac"
-                  ? "Peek your card at the end of night."
-                  : nightRole === "Doppleganger"
-                  ? "Copy another role, then perform that action."
-                  : nightRole === "Tanner"
-                  ? "Try to get yourself eliminated."
-                  : "No action. Keep eyes closed.",
-              waiting: nightWaiting,
-            },
-            discussion: data.discussion,
-            voting: data.voting,
-            reveal: data.reveal,
-          }}
+          isHost={effectiveIsHost}
+          interactive={!liveGame}
+          discussionTokensByCard={liveGame?.discussionTokensByCard}
+          voteCountsByCard={liveGame?.voteCountsByCard}
+          onAckRole={liveGame ? () => sendLiveCommand({ type: "ACK_ROLE" }) : undefined}
+          onStartNight={liveGame ? () => sendLiveCommand({ type: "START_NIGHT" }) : undefined}
+          onAdvanceNightStep={
+            liveGame ? () => sendLiveCommand({ type: "ADVANCE_NIGHT_STEP" }) : undefined
+          }
+          onStartVoting={liveGame ? () => sendLiveCommand({ type: "START_VOTING" }) : undefined}
+          onLockVotes={
+            liveGame ? () => sendLiveCommand({ type: "LOCK_VOTES", payload: { locked: true } }) : undefined
+          }
+          onRevealResults={liveGame ? () => sendLiveCommand({ type: "REVEAL_RESULTS" }) : undefined}
+          onSubmitVote={
+            liveGame ? (targetPlayerId) => sendLiveCommand({ type: "SUBMIT_VOTE", payload: { targetPlayerId } }) : undefined
+          }
+          onPlaceToken={
+            liveGame
+              ? (targetId, role) =>
+                  role
+                    ? sendLiveCommand({
+                        type: "PLACE_TOKEN",
+                        payload: { targetId, role: role.toLowerCase() },
+                      })
+                    : sendLiveCommand({ type: "REMOVE_TOKEN", payload: { targetId } })
+              : undefined
+          }
+          onNightAction={
+            liveGame
+              ? (payload) =>
+                  sendLiveCommand({
+                    type: "NIGHT_ACTION",
+                    payload,
+                  })
+              : undefined
+          }
+          data={
+            liveGame
+              ? liveGame.data
+              : {
+                  board: {
+                    ...data.board,
+                    phaseSecondsRemaining: dealCountdown ?? data.board.phaseSecondsRemaining,
+                  },
+                  phase: gamePhase,
+                  phaseTimer: dealCountdown !== null ? `${dealCountdown}s` : undefined,
+                  night: {
+                    step: data.night.step,
+                    instruction: data.night.instruction,
+                    remaining:
+                      nightCountdown !== null ? `Night countdown: ${nightCountdown}s` : data.night.remaining,
+                    role: nightRole,
+                    roleInstruction:
+                      nightRole === "Werewolf"
+                        ? "Look for other werewolves. If alone, you may peek one center card."
+                        : nightRole === "Minion"
+                        ? "See the werewolves, then close your eyes."
+                        : nightRole === "Mason"
+                        ? "Look for the other mason."
+                        : nightRole === "Seer"
+                        ? "View one player or two center cards."
+                        : nightRole === "Robber"
+                        ? "Swap with a player and view your new role."
+                        : nightRole === "Troublemaker"
+                        ? "Swap two other players."
+                        : nightRole === "Drunk"
+                        ? "Swap with a center card without looking."
+                        : nightRole === "Insomniac"
+                        ? "Peek your card at the end of night."
+                        : nightRole === "Doppleganger"
+                        ? "Copy another role, then perform that action."
+                        : nightRole === "Tanner"
+                        ? "Try to get yourself eliminated."
+                        : "No action. Keep eyes closed.",
+                    waiting: nightWaiting,
+                  },
+                  discussion: data.discussion,
+                  voting: data.voting,
+                  reveal: data.reveal,
+                }
+          }
         />
       )}
     </div>

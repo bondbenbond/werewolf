@@ -1,12 +1,13 @@
 import { CardGrid } from "../components/CardGrid";
 import { Button } from "../components/Button";
-import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 
 export type GameBoardData = {
   title: string;
   phase: string;
   phaseSecondsRemaining?: number | null;
   phaseSecondsTotal?: number | null;
+  phaseEndsAt?: number | null;
   role: { name: string; description: string };
   playerName: string;
   cards: Array<{ id: string; label: string; type: "center" | "player" }>;
@@ -29,6 +30,7 @@ export const GameBoardScreen = forwardRef<
     isHost?: boolean;
     initialRoleModal?: boolean;
     showHostBar?: boolean;
+    showRoleModalOverride?: boolean;
     cardTokenById?: Record<string, string | null | undefined>;
     cardVoteCountById?: Record<string, number | undefined>;
     cardMenuForId?: string | null;
@@ -36,6 +38,7 @@ export const GameBoardScreen = forwardRef<
     cardMenuPosition?: { placement: "top" | "bottom"; align: "left" | "center" | "right" };
     onCardMenuSelect?: (cardId: string, role: string | null) => void;
     onCardClick?: (cardId: string, rect: DOMRect) => void;
+    onAcknowledge?: () => void;
   }
 >(function GameBoardScreen(
   {
@@ -44,12 +47,14 @@ export const GameBoardScreen = forwardRef<
     initialRoleModal = true,
     showHostBar = true,
     cardTokenById,
+    showRoleModalOverride,
     cardVoteCountById,
     cardMenuForId,
     cardMenuItems,
     cardMenuPosition,
     onCardMenuSelect,
     onCardClick,
+    onAcknowledge,
   },
   ref
 ) {
@@ -131,6 +136,12 @@ export const GameBoardScreen = forwardRef<
     const key = role.toLowerCase();
     return `/assets/icons/${key}.png`;
   };
+  useEffect(() => {
+    if (typeof showRoleModalOverride === "boolean") {
+      setShowRoleModal(showRoleModalOverride);
+    }
+  }, [showRoleModalOverride]);
+
   return (
     <div className="board-shell">
       <div className="board-top">
@@ -275,7 +286,13 @@ export const GameBoardScreen = forwardRef<
                 <p className="eyebrow">Your role, keep it secret</p>
                 <h3>{roleData.name}</h3>
                 <p className="lede">{roleData.description}</p>
-                <Button variant="success" onClick={() => setShowRoleModal(false)}>
+                <Button
+                  variant="success"
+                  onClick={() => {
+                    setShowRoleModal(false);
+                    onAcknowledge?.();
+                  }}
+                >
                   Acknowledge
                 </Button>
               </div>

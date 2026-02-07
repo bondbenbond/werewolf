@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "../components/Button";
 
 type LobbyData = {
@@ -10,29 +11,65 @@ type LobbyData = {
     discussionSeconds: number;
     votingSeconds: number;
   };
-  players: Array<{ name: string; connected: boolean; ready: boolean; host?: boolean }>;
+  players: Array<{ playerId?: string; name: string; connected: boolean; ready: boolean; host?: boolean }>;
   startCountdownSeconds?: number | null;
   showCountdownOverlay?: boolean;
 };
 
-export function LobbyPlayerScreen({ data }: { data: LobbyData }) {
+type LobbyPlayerScreenProps = {
+  data: LobbyData;
+  currentPlayerId?: string;
+  onSetReady?: (ready: boolean) => void;
+  onLeave?: () => void;
+};
+
+export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }: LobbyPlayerScreenProps) {
   const roleTotal = data.roles.reduce((sum, role) => sum + role.count, 0);
   const rolesRequired = data.players.length + 3;
+  const currentPlayer = currentPlayerId
+    ? data.players.find((player) => player.playerId === currentPlayerId)
+    : undefined;
+  const isReady = currentPlayer?.ready ?? false;
+  const shareUrl = data.shareUrl || `${window.location.origin}/?game=${data.roomCode}`;
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
+  const copyLink = () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(shareUrl);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = shareUrl;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopyStatus("copied");
+      window.setTimeout(() => setCopyStatus("idle"), 1400);
+    } catch {
+      setCopyStatus("idle");
+    }
+  };
   return (
     <div className="lobby-shell">
       <div className="lobby-header">
         <div>
           <p className="eyebrow">Lobby</p>
           <h2>Room {data.roomCode}</h2>
-          <p className="lede">{data.gameName || "Waiting for the host to start the game."}</p>
+          <p className="lede">
+            Waiting on the host to start the game.
+          </p>
         </div>
         <div className="lobby-actions">
           <button
             className="room-copy"
             type="button"
-            onClick={() => navigator.clipboard?.writeText(data.shareUrl)}
+            onClick={copyLink}
           >
-            Copy link
+            {copyStatus === "copied" ? "Copied!" : "Copy link"}
           </button>
         </div>
       </div>
@@ -72,7 +109,7 @@ export function LobbyPlayerScreen({ data }: { data: LobbyData }) {
           </div>
           <div className="players-list">
             {data.players.map((player) => (
-              <div key={player.name} className="player-row">
+              <div key={player.playerId ?? player.name} className="player-row">
                 <div>
                   <strong>
                     {player.name}
@@ -89,8 +126,12 @@ export function LobbyPlayerScreen({ data }: { data: LobbyData }) {
             ))}
           </div>
           <div className="player-ready-cta">
-            <Button variant="success">Ready</Button>
-            <Button variant="ghost">Leave</Button>
+            <Button variant="success" onClick={() => onSetReady?.(!isReady)} disabled={!onSetReady}>
+              {isReady ? "Unready" : "Ready"}
+            </Button>
+            <Button variant="ghost" onClick={() => onLeave?.()} disabled={!onLeave}>
+              Leave
+            </Button>
           </div>
         </section>
       </div>
