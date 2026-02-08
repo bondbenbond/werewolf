@@ -2,7 +2,10 @@ version: "3.9"
 
 services:
   web:
+    image: ghcr.io/bondbenbond/werewolf-web:${WEB_TAG}
     container_name: werewolf-web-test
+    expose:
+      - "80"
     volumes:
       - ./env.web.test.json:/usr/share/nginx/html/assets/env.json:ro
     networks:
@@ -11,8 +14,17 @@ services:
           - werewolf-web-test
 
   server:
+    image: ghcr.io/bondbenbond/werewolf-server:${SERVER_TAG}
     container_name: werewolf-server-test
+    environment:
+      NODE_ENV: ${NODE_ENV}
+    expose:
+      - "4000"
     networks:
       caddy-net:
         aliases:
           - werewolf-server-test
+
+networks:
+  caddy-net:
+    external: true

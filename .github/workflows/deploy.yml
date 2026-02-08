@@ -1,0 +1,146 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["Publish images"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to latest publish SHA)"
+        required: false
+        type: string
+      promote_to_prod:
+        description: "After test deploy, promote same tag to prod"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve_tag:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    outputs:
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+    steps:
+      - name: Resolve image tag
+        id: resolve
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            TAG="${{ github.event.workflow_run.head_sha }}"
+          elif [[ -n "${{ inputs.image_tag }}" ]]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="${{ github.sha }}"
+          fi
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using image tag: $TAG"
+
+  deploy_test:
+    name: Deploy test
+    runs-on: ubuntu-latest
+    needs: resolve_tag
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy on test host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            REPO_DIR=/opt/werewolf
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              rm -rf "$REPO_DIR"
+              git clone "$REPO_URL" "$REPO_DIR"
+            fi
+            cd "$REPO_DIR"
+
+            git fetch origin main
+            git checkout -B deploy FETCH_HEAD
+
+            cat > .env.test <<'EOF'
+            WEB_TAG=${{ needs.resolve_tag.outputs.image_tag }}
+            SERVER_TAG=${{ needs.resolve_tag.outputs.image_tag }}
+            SERVER_URL=https://test-api-werewolf.bondbenbond.com
+            NODE_ENV=development
+            EOF
+
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+
+            docker compose \
+              --env-file .env.test \
+              -f docker-compose.test.yml \
+              pull
+
+            docker compose \
+              --env-file .env.test \
+              -f docker-compose.test.yml \
+              up -d --remove-orphans
+
+  deploy_prod:
+    name: Deploy prod
+    runs-on: ubuntu-latest
+    needs: [resolve_tag, deploy_test]
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_to_prod
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy on prod host
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            REPO_DIR=/opt/werewolf
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              rm -rf "$REPO_DIR"
+              git clone "$REPO_URL" "$REPO_DIR"
+            fi
+            cd "$REPO_DIR"
+
+            git fetch origin main
+            git checkout -B deploy FETCH_HEAD
+
+            cat > .env.prod <<'EOF'
+            WEB_TAG=${{ needs.resolve_tag.outputs.image_tag }}
+            SERVER_TAG=${{ needs.resolve_tag.outputs.image_tag }}
+            SERVER_URL=https://api-werewolf.bondbenbond.com
+            NODE_ENV=production
+            EOF
+
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+
+            docker compose \
+              --env-file .env.prod \
+              -f docker-compose.prod.yml \
+              pull
+
+            docker compose \
+              --env-file .env.prod \
+              -f docker-compose.prod.yml \
+              up -d --remove-orphans
