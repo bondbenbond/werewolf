@@ -107,7 +107,9 @@ jobs:
     name: Deploy prod
     runs-on: ubuntu-latest
     needs: [resolve_tag, deploy_test]
-    if: github.event_name == 'workflow_dispatch' && inputs.promote_to_prod
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.promote_to_prod)
     environment: prod
     steps:
       - uses: actions/checkout@v4
