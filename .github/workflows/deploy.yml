@@ -86,8 +86,6 @@ jobs:
             NODE_ENV=development
             EOF
 
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
-
             docker compose \
               --env-file .env.test \
               -f docker-compose.test.yml \
@@ -138,8 +136,6 @@ jobs:
             SERVER_URL=https://api-werewolf.bondbenbond.com
             NODE_ENV=production
             EOF
-
-            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
 
             docker compose \
               --env-file .env.prod \
