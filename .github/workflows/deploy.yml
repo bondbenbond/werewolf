@@ -94,6 +94,13 @@ jobs:
             docker compose \
               --env-file .env.test \
               -f cd/docker-compose.test.yml \
+              down --remove-orphans || true
+
+            docker rm -f werewolf-web-test werewolf-server-test 2>/dev/null || true
+
+            docker compose \
+              --env-file .env.test \
+              -f cd/docker-compose.test.yml \
               up -d --remove-orphans
 
   deploy_prod:
@@ -141,6 +148,13 @@ jobs:
               --env-file .env.prod \
               -f cd/docker-compose.prod.yml \
               pull
+
+            docker compose \
+              --env-file .env.prod \
+              -f cd/docker-compose.prod.yml \
+              down --remove-orphans || true
+
+            docker rm -f werewolf-web werewolf-server 2>/dev/null || true
 
             docker compose \
               --env-file .env.prod \
