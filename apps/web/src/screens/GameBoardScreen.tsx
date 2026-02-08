@@ -118,28 +118,41 @@ export const GameBoardScreen = forwardRef<
 
   const roleData = devRoles[roleIndex] ?? data.role;
   const roleImageMap: Record<string, string> = {
-    werewolf: "/assets/cards/werewolf.jpg",
-    minion: "/assets/cards/minion.jpg",
-    mason: "/assets/cards/mason.jpg",
-    seer: "/assets/cards/seer.jpg",
-    robber: "/assets/cards/robber.jpg",
-    troublemaker: "/assets/cards/troublemaker.jpg",
-    drunk: "/assets/cards/drunk.jpg",
-    doppleganger: "/assets/cards/doppleganger.jpg",
-    insomniac: "/assets/cards/insomniac.jpg",
-    tanner: "/assets/cards/tanner.jpg",
-    villager: "/assets/cards/villager.jpg",
+    werewolf: "/assets/cards/werewolf.f3ee1e00.jpg",
+    minion: "/assets/cards/minion.7e158819.jpg",
+    mason: "/assets/cards/mason.1a204ce7.jpg",
+    seer: "/assets/cards/seer.4354448c.jpg",
+    robber: "/assets/cards/robber.9756e1d3.jpg",
+    troublemaker: "/assets/cards/troublemaker.ace70756.jpg",
+    drunk: "/assets/cards/drunk.32ee2ceb.jpg",
+    doppleganger: "/assets/cards/doppleganger.da67f16f.jpg",
+    insomniac: "/assets/cards/insomniac.728282b7.jpg",
+    tanner: "/assets/cards/tanner.aa0f20f8.jpg",
+    villager: "/assets/cards/villager.99747882.jpg",
+  };
+  const iconImageMap: Record<string, string> = {
+    werewolf: "/assets/icons/werewolf.48c1d1a6.png",
+    minion: "/assets/icons/minion.08d75018.png",
+    mason: "/assets/icons/mason.27acfbe5.png",
+    seer: "/assets/icons/seer.1e6151fb.png",
+    robber: "/assets/icons/robber.1a73bfe5.png",
+    troublemaker: "/assets/icons/troublemaker.c1cb05ef.png",
+    drunk: "/assets/icons/drunk.ed6e8986.png",
+    doppleganger: "/assets/icons/doppleganger.bb913254.png",
+    insomniac: "/assets/icons/insomniac.efda1179.png",
+    tanner: "/assets/icons/tanner.86f18743.png",
+    villager: "/assets/icons/villager.c8c8ac2f.png",
   };
   const normalizedRole = roleData.name.toLowerCase();
-  const roleImage = roleImageMap[normalizedRole] ?? "/assets/cards/card-back.jpg";
+  const roleImage = roleImageMap[normalizedRole] ?? "/assets/cards/card-back.c0fe042f.jpg";
   const tokenImageFor = (role?: string | null) => {
     if (!role) return null;
     const key = role.toLowerCase();
-    return `/assets/icons/${key}.png`;
+    return iconImageMap[key] ?? null;
   };
   const imageForRole = (role?: string) => {
-    if (!role) return "/assets/cards/card-back.jpg";
-    return roleImageMap[role.toLowerCase()] ?? "/assets/cards/card-back.jpg";
+    if (!role) return "/assets/cards/card-back.c0fe042f.jpg";
+    return roleImageMap[role.toLowerCase()] ?? "/assets/cards/card-back.c0fe042f.jpg";
   };
   const selectedSet = new Set(selectedCardIds ?? []);
   const selectableSet = new Set(selectableCardIds ?? []);
