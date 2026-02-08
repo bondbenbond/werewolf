@@ -64,7 +64,10 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            REPO_DIR=/opt/werewolf
+            REPO_DIR="${{ secrets.DEPLOY_DIR }}"
+            if [ -z "$REPO_DIR" ]; then
+              REPO_DIR="$HOME/werewolf"
+            fi
             REPO_URL="https://github.com/${{ github.repository }}.git"
 
             if [ ! -d "$REPO_DIR/.git" ]; then
@@ -114,7 +117,10 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            REPO_DIR=/opt/werewolf
+            REPO_DIR="${{ secrets.DEPLOY_DIR }}"
+            if [ -z "$REPO_DIR" ]; then
+              REPO_DIR="$HOME/werewolf"
+            fi
             REPO_URL="https://github.com/${{ github.repository }}.git"
 
             if [ ! -d "$REPO_DIR/.git" ]; then
