@@ -87,11 +87,13 @@ jobs:
             EOF
 
             docker compose \
+              -p werewolf-test \
               --env-file .env.test \
               -f cd/docker-compose.test.yml \
               pull
 
             docker compose \
+              -p werewolf-test \
               --env-file .env.test \
               -f cd/docker-compose.test.yml \
               down --remove-orphans || true
@@ -99,6 +101,7 @@ jobs:
             docker rm -f werewolf-web-test werewolf-server-test 2>/dev/null || true
 
             docker compose \
+              -p werewolf-test \
               --env-file .env.test \
               -f cd/docker-compose.test.yml \
               up -d --remove-orphans
@@ -147,11 +150,13 @@ jobs:
             EOF
 
             docker compose \
+              -p werewolf-prod \
               --env-file .env.prod \
               -f cd/docker-compose.prod.yml \
               pull
 
             docker compose \
+              -p werewolf-prod \
               --env-file .env.prod \
               -f cd/docker-compose.prod.yml \
               down --remove-orphans || true
@@ -159,6 +164,7 @@ jobs:
             docker rm -f werewolf-web werewolf-server 2>/dev/null || true
 
             docker compose \
+              -p werewolf-prod \
               --env-file .env.prod \
               -f cd/docker-compose.prod.yml \
               up -d --remove-orphans
