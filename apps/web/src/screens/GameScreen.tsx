@@ -23,6 +23,7 @@ export type GameScreenData = {
     role?: string;
     roleInstruction?: string;
     waiting?: boolean;
+    doppleFollowupRole?: string;
     selectableCardIds?: string[];
     blinkCardIds?: string[];
     revealedRolesByCardId?: Record<string, string>;
@@ -92,6 +93,9 @@ export function GameScreen({
   const [nightActionPending, setNightActionPending] = useState(false);
   const [nightActionError, setNightActionError] = useState<string | null>(null);
   const [completedNightStepKey, setCompletedNightStepKey] = useState<string | null>(null);
+  const [showDoppleFollowupModal, setShowDoppleFollowupModal] = useState(false);
+  const [doppleFollowupTriggered, setDoppleFollowupTriggered] = useState(false);
+  const [doppleFollowupRoleLabel, setDoppleFollowupRoleLabel] = useState<string>("role");
   const [hostNextLoading, setHostNextLoading] = useState(false);
   const [hostEndLoading, setHostEndLoading] = useState(false);
   const [revealResultsVisible, setRevealResultsVisible] = useState(false);
@@ -192,6 +196,9 @@ export function GameScreen({
       setNightActionPending(false);
       setNightActionError(null);
       setCompletedNightStepKey(null);
+      setShowDoppleFollowupModal(false);
+      setDoppleFollowupTriggered(false);
+      setDoppleFollowupRoleLabel("role");
       return;
     }
     setNightSelections({ players: [], centers: [] });
@@ -199,6 +206,9 @@ export function GameScreen({
     setNightActionPending(false);
     setNightActionError(null);
     setCompletedNightStepKey(null);
+    setShowDoppleFollowupModal(false);
+    setDoppleFollowupTriggered(false);
+    setDoppleFollowupRoleLabel("role");
   }, [data.phase, data.night.step]);
 
   const normalizeRoleKey = (label?: string | null) => (label ? label.toLowerCase() : "");
@@ -240,7 +250,12 @@ export function GameScreen({
           .map((card) => card.id)
           .filter((cardId) => !nightSelections.centers.includes(Number(cardId.replace("center-", ""))));
       }
-      return data.board.cards.filter((card) => card.type === "center" || card.type === "player").map((c) => c.id);
+      return data.board.cards
+        .filter(
+          (card) =>
+            card.type === "center" || (card.type === "player" && card.id !== data.board.playerId)
+        )
+        .map((c) => c.id);
     }
     if (roleKey === "robber") {
       return data.board.cards
@@ -337,6 +352,7 @@ export function GameScreen({
     }
     if (roleKey === "seer") {
       if (card.type === "player") {
+        if (cardId === data.board.playerId) return;
         try {
           await submitNightAction({ kind: "seerViewPlayer", targetPlayerId: cardId });
           setNightSelections({ players: [cardId], centers: [] });
@@ -419,7 +435,6 @@ export function GameScreen({
     ["doppleganger", "seer", "robber", "troublemaker", "drunk"].includes(roleKey) || werewolfCanSoloPeek;
   const roleHasNoSelection =
     roleKey === "minion" || roleKey === "mason" || (roleKey === "werewolf" && !werewolfCanSoloPeek);
-  const showNoTapHint = roleHasNoSelection && roleKey !== "minion";
   const roleNeedsStartModal =
     roleNeedsSelection ||
     ["werewolf", "insomniac", "minion", "mason"].includes(roleKey);
@@ -432,12 +447,7 @@ export function GameScreen({
     completedNightStepKey !== currentNightStepKey;
   const nextStepLabel = (data.night.nextStep ?? "Discussion").toLowerCase() === "discussion" ? "Next phase" : "Next role";
   const showNightHintBanner = data.phase === "night" && !showNightStartModal && !showNightWaitingModal;
-  const startActionLabel =
-    roleHasNoSelection
-      ? "I understand"
-      : roleKey === "insomniac"
-      ? "Reveal final role"
-      : "Start action";
+  const startActionLabel = roleKey === "insomniac" ? "Reveal final role" : "Start action";
   const showParallelResultModal = data.phase === "parallelResult";
   const boardPhaseSecondsRemaining =
     data.phase === "night"
@@ -494,19 +504,17 @@ export function GameScreen({
   const visibleNightNotes = hideNightInfoUntilStart ? undefined : data.night.cardAnnotationsByCardId;
 
   useEffect(() => {
-    if (data.phase !== "night" || roleKey !== "werewolf" || nightActionState !== "selecting") return;
-    if (!werewolfCanSoloPeek && werewolfPartnerKnown) {
-      markNightActionConfirmed();
-    }
-  }, [data.phase, roleKey, nightActionState, werewolfCanSoloPeek, werewolfPartnerKnown]);
-
-  useEffect(() => {
     if (data.phase !== "night") return;
-    if ((data.night.step ?? "").toLowerCase() !== "doppleganger") return;
     if (nightActionState !== "confirmed") return;
-    if (!["seer", "robber", "troublemaker", "drunk"].includes(roleKey)) return;
-    setNightActionState("selecting");
-  }, [data.phase, data.night.step, nightActionState, roleKey]);
+    if (!data.night.doppleFollowupRole) return;
+    if (doppleFollowupTriggered) return;
+    setDoppleFollowupRoleLabel(data.night.doppleFollowupRole);
+    const timer = window.setTimeout(() => {
+      setDoppleFollowupTriggered(true);
+      setShowDoppleFollowupModal(true);
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [data.phase, data.night.doppleFollowupRole, doppleFollowupTriggered, nightActionState]);
 
   useEffect(() => {
     if (!showRoleModal) return;
@@ -515,10 +523,10 @@ export function GameScreen({
   }, [showRoleModal]);
 
   useEffect(() => {
-    if (!showNightStartModal && !showNightWaitingModal && !showParallelResultModal) return;
+    if (!showNightStartModal && !showNightWaitingModal && !showParallelResultModal && !showDoppleFollowupModal) return;
     forceScrollViewportToTop();
     return undefined;
-  }, [showNightStartModal, showNightWaitingModal, showParallelResultModal]);
+  }, [showNightStartModal, showNightWaitingModal, showParallelResultModal, showDoppleFollowupModal]);
 
   return (
     <div className="game-shell">
@@ -647,9 +655,6 @@ export function GameScreen({
             <p className="eyebrow">Your action</p>
             <h3>{data.night.role ?? "Role action"}</h3>
             <p className="lede">{data.night.roleInstruction ?? data.night.instruction}</p>
-            {showNoTapHint ? (
-              <p className="lede">No card tap needed. Use this time to memorize what you saw.</p>
-            ) : null}
             <Button
               variant="success"
               loading={nightActionPending}
@@ -657,11 +662,11 @@ export function GameScreen({
               onClick={() => {
                 setNightActionError(null);
                 if (roleKey === "werewolf" && werewolfPartnerKnown && !werewolfCanSoloPeek) {
-                  markNightActionConfirmed();
+                  setNightActionState("selecting");
                   return;
                 }
                 if (roleKey === "minion" || roleKey === "mason") {
-                  markNightActionConfirmed();
+                  setNightActionState("selecting");
                   return;
                 }
                 if (roleKey === "insomniac") {
@@ -679,6 +684,28 @@ export function GameScreen({
               }}
             >
               {startActionLabel}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {showDoppleFollowupModal ? (
+        <div className="overlay">
+          <div className="overlay-card action-card">
+            <p className="eyebrow">Copied role</p>
+            <h3>Perform your doppleganger action</h3>
+            <p className="lede">You saw the {doppleFollowupRoleLabel} card, perform that action now.</p>
+            <Button
+              variant="success"
+              loading={nightActionPending}
+              disabled={nightActionPending}
+              onClick={() => {
+                setNightActionError(null);
+                setShowDoppleFollowupModal(false);
+                setNightActionState("selecting");
+              }}
+            >
+              Start action
             </Button>
           </div>
         </div>

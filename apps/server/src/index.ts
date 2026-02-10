@@ -24,6 +24,7 @@ import {
 } from "@werewolf/shared";
 
 const PORT = Number(process.env.PORT ?? 4000);
+const DEBUG_COMMANDS = process.env.DEBUG_COMMANDS !== "0";
 
 const DEFAULT_SETTINGS: GameSettings = {
   nightStepSeconds: 10,
@@ -38,6 +39,12 @@ const DEFAULT_SETTINGS: GameSettings = {
   parallelNight: false,
 };
 const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT ?? 150);
+const TRACED_COMMANDS = new Set(["UPDATE_SETTINGS", "START_GAME", "RESET_GAME"]);
+
+const logCommand = (message: string, details: Record<string, unknown>) => {
+  if (!DEBUG_COMMANDS) return;
+  console.info(`[commands] ${message}`, details);
+};
 
 type GameRecord = {
   state: GameState;
@@ -200,6 +207,8 @@ const buildPublicState = (state: GameState): PublicGameState => {
           totalSteps: state.night.totalSteps,
           endsAt: state.night.endsAt,
           mode: state.night.mode,
+          copiedRoleByPlayer: state.night.copiedRoleByPlayer,
+          dopplegangerInsomniacStep: state.night.dopplegangerInsomniacStep,
         }
       : undefined,
     tokens: state.tokens
@@ -246,7 +255,7 @@ const eligiblePlayersForNightRole = (state: GameState, role: Role): string[] => 
 const eligiblePlayersForNightStepRole = (state: GameState, role: Role): string[] => {
   const base = eligiblePlayersForNightRole(state, role);
   if (!state.night) return base;
-  if (!["werewolf", "minion", "mason"].includes(role)) return base;
+  if (!["werewolf", "mason"].includes(role)) return base;
   const copied = Object.entries(state.night.copiedRoleByPlayer ?? {})
     .filter(([playerId, copiedRole]) => copiedRole === role && getOriginalRole(state, playerId) === "doppleganger")
     .map(([playerId]) => playerId);
@@ -470,6 +479,9 @@ const emitPendingDopplegangerInsomniacPeeks = (record: GameRecord) => {
       const view: PrivateView = { kind: "insomniacFinalRole", role };
       record.privateViews.set(playerId, view);
       emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+      if (record.state.night?.completionByPlayer[playerId] !== undefined) {
+        record.state.night.completionByPlayer[playerId] = true;
+      }
     }
   });
   record.dopplegangerInsomniac.clear();
@@ -563,7 +575,13 @@ const removePlayerFromState = (record: GameRecord, playerId: string) => {
 };
 
 const NIGHT_COUNTDOWN_MS = 3_000;
-const getNightStepMs = (record: GameRecord) => Math.max(1, record.state.settings.nightStepSeconds) * 1000;
+const getNightStepMs = (record: GameRecord, stepRole?: Role | null) => {
+  const baseMs = Math.max(1, record.state.settings.nightStepSeconds) * 1000;
+  if (stepRole === "doppleganger") {
+    return Math.ceil(baseMs * 1.5);
+  }
+  return baseMs;
+};
 const getParallelResultMs = (record: GameRecord) =>
   Math.max(1, record.state.settings.parallelResultSeconds) * 1000;
 const getVotingMs = (record: GameRecord) => Math.max(1, record.state.settings.votingSeconds) * 1000;
@@ -708,7 +726,8 @@ const startNight = (record: GameRecord) => {
       totalSteps: record.nightSteps.length,
       completionByPlayer,
       copiedRoleByPlayer: Object.fromEntries(record.state.playerOrder.map((id) => [id, null])),
-      endsAt: Date.now() + getNightStepMs(record),
+      dopplegangerInsomniacStep: false,
+      endsAt: Date.now() + getNightStepMs(record, stepRole),
       mode: "sequential",
     };
     if (record.state.settings.autoAdvanceNight) {
@@ -719,7 +738,7 @@ const startNight = (record: GameRecord) => {
         }
         advanceNightStep(record);
         appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-      }, getNightStepMs(record));
+      }, getNightStepMs(record, stepRole));
     }
     emitInfoForStepRole(stepRole);
   }
@@ -754,6 +773,38 @@ const advanceNightStep = (record: GameRecord) => {
   }
 
   const nextIndex = record.state.night.stepIndex + 1;
+  const shouldRunDopplegangerInsomniacStep =
+    record.state.night.stepRole === "insomniac" &&
+    !record.state.night.dopplegangerInsomniacStep &&
+    record.dopplegangerInsomniac.size > 0;
+  if (shouldRunDopplegangerInsomniacStep) {
+    const completionByPlayer = Object.fromEntries(
+      [...record.dopplegangerInsomniac].map((playerId) => [playerId, false] as const)
+    );
+    record.state.night = {
+      stepIndex: nextIndex,
+      stepRole: "insomniac",
+      totalSteps: record.nightSteps.length + 1,
+      completionByPlayer,
+      copiedRoleByPlayer: record.state.night.copiedRoleByPlayer,
+      dopplegangerInsomniacStep: true,
+      endsAt: Date.now() + getNightStepMs(record, "insomniac"),
+      mode: "sequential",
+    };
+    emitPendingDopplegangerInsomniacPeeks(record);
+    if (record.state.settings.autoAdvanceNight) {
+      record.nightStepTimer = setTimeout(() => {
+        if (record.state.phase !== "night" || record.state.night?.stepIndex !== nextIndex) return;
+        if (record.state.night?.stepRole === "insomniac") {
+          emitPendingDopplegangerInsomniacPeeks(record);
+        }
+        advanceNightStep(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+      }, getNightStepMs(record, "insomniac"));
+    }
+    record.state.updatedAt = Date.now();
+    return;
+  }
   if (nextIndex >= record.nightSteps.length) {
     record.state.phase = "discussion";
     record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
@@ -774,7 +825,8 @@ const advanceNightStep = (record: GameRecord) => {
     totalSteps: record.nightSteps.length,
     completionByPlayer,
     copiedRoleByPlayer: record.state.night.copiedRoleByPlayer,
-    endsAt: Date.now() + getNightStepMs(record),
+    dopplegangerInsomniacStep: false,
+    endsAt: Date.now() + getNightStepMs(record, stepRole),
     mode: "sequential",
   };
   if (record.state.settings.autoAdvanceNight) {
@@ -785,7 +837,7 @@ const advanceNightStep = (record: GameRecord) => {
       }
       advanceNightStep(record);
       appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-    }, getNightStepMs(record));
+    }, getNightStepMs(record, stepRole));
   }
   if (stepRole === "werewolf") {
     const wolves = eligiblePlayersForNightStepRole(record.state, "werewolf");
@@ -887,7 +939,10 @@ const validateNightAction = (
   if (record.state.night.mode === "sequential") {
     const stepRole = record.state.night.stepRole;
     if (!stepRole) return "Night step missing";
-    const eligible = eligiblePlayersForNightStepRole(record.state, stepRole);
+    let eligible = eligiblePlayersForNightStepRole(record.state, stepRole);
+    if (stepRole === "insomniac" && record.state.night.dopplegangerInsomniacStep) {
+      eligible = Object.keys(record.state.night.completionByPlayer);
+    }
     if (!eligible.includes(playerId)) return "Not your night step";
   }
 
@@ -961,14 +1016,23 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
       if (targetRole === "insomniac") {
         record.dopplegangerInsomniac.add(playerId);
       }
-      const copiedRoleNeedsImmediateAction = ["seer", "robber", "troublemaker", "drunk"].includes(targetRole);
-      if (!copiedRoleNeedsImmediateAction) {
+      const copiedRoleNeedsImmediateAction = ["seer", "robber", "troublemaker", "drunk", "minion"].includes(
+        targetRole
+      );
+      if (!copiedRoleNeedsImmediateAction || targetRole === "minion") {
         markComplete();
       }
       {
-        const view: PrivateView = copiedRoleNeedsImmediateAction
-          ? { kind: "dopplegangerActAsRole", role: targetRole }
-          : { kind: "dopplegangerCopiedRole", role: targetRole };
+        const view: PrivateView =
+          targetRole === "minion"
+            ? {
+                kind: "minionSawWerewolves",
+                werewolfIds: eligiblePlayersForNightStepRole(record.state, "werewolf"),
+                targetPlayerId: action.targetPlayerId,
+              }
+            : copiedRoleNeedsImmediateAction
+            ? { kind: "dopplegangerActAsRole", role: targetRole, targetPlayerId: action.targetPlayerId }
+            : { kind: "dopplegangerCopiedRole", role: targetRole, targetPlayerId: action.targetPlayerId };
         setPlayerView(view);
         return view;
       }
@@ -1215,12 +1279,41 @@ app.post(
 
   const commandType = body.command.type;
   const isHost = record.state.hostPlayerId === body.playerId;
+  const trace = TRACED_COMMANDS.has(commandType);
+  const startedAt = Date.now();
+  if (trace) {
+    logCommand("received", {
+      gameId,
+      commandType,
+      playerId: body.playerId,
+      isHost,
+      phase: record.state.phase,
+      version: record.version,
+    });
+  }
 
   if (commandType === "UPDATE_SETTINGS") {
     if (!isHost || record.state.phase !== "lobby") {
+      if (trace) {
+        logCommand("rejected", {
+          gameId,
+          commandType,
+          reason: "Host only in lobby",
+          phase: record.state.phase,
+          isHost,
+        });
+      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
     }
     const settings = (body.command as any).payload?.settings as Partial<GameSettings>;
+    if (trace) {
+      logCommand("applying_settings", {
+        gameId,
+        commandType,
+        phase: record.state.phase,
+        settings,
+      });
+    }
     record.state.settings = { ...record.state.settings, ...settings };
     record.state.updatedAt = Date.now();
   }
@@ -1250,12 +1343,37 @@ app.post(
 
   if (commandType === "START_GAME") {
     if (!isHost || record.state.phase !== "lobby") {
+      if (trace) {
+        logCommand("rejected", {
+          gameId,
+          commandType,
+          reason: "Host only in lobby",
+          phase: record.state.phase,
+          isHost,
+        });
+      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
+    }
+    if (trace) {
+      logCommand("starting_game", {
+        gameId,
+        players: record.state.playerOrder.length,
+        selectedRoles: record.state.roleSelection.roles.length,
+        settings: record.state.settings,
+      });
     }
     clearAllPhaseTimers(record);
     try {
       assignRoles(record.state);
     } catch (err) {
+      if (trace) {
+        logCommand("failed", {
+          gameId,
+          commandType,
+          reason: "Role selection invalid",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return reply.code(400).send({ error: "INVALID_ROLES", message: "Role selection invalid" });
     }
     record.state.phase = "deal";
@@ -1471,9 +1589,28 @@ app.post(
 
   if (commandType === "RESET_GAME") {
     if (!isHost) {
+      if (trace) {
+        logCommand("rejected", {
+          gameId,
+          commandType,
+          reason: "Host only",
+          phase: record.state.phase,
+          isHost,
+        });
+      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only" });
     }
+    if (trace) {
+      logCommand("resetting_game", {
+        gameId,
+        phase: record.state.phase,
+        version: record.version,
+      });
+    }
     clearAllPhaseTimers(record);
+    record.privateViews.clear();
+    record.dopplegangerInsomniac.clear();
+    record.nightSteps = [];
     record.state.phase = "lobby";
     record.state.phaseEndsAt = undefined;
     record.state.roles = undefined;
@@ -1491,6 +1628,16 @@ app.post(
   }
 
   const event = appendEvent(record, commandType, { playerId: body.playerId, command: body.command });
+  if (trace) {
+    logCommand("completed", {
+      gameId,
+      commandType,
+      durationMs: Date.now() - startedAt,
+      phase: record.state.phase,
+      version: record.version,
+      appliedVersion: event.version,
+    });
+  }
   const response: CommandResponse = {
     accepted: true,
     appliedVersion: record.version,

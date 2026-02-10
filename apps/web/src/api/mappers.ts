@@ -48,6 +48,7 @@ type GameScreenData = {
     role?: string;
     roleInstruction?: string;
     waiting?: boolean;
+    doppleFollowupRole?: string;
     selectableCardIds?: string[];
     blinkCardIds?: string[];
     revealedRolesByCardId?: Record<string, string>;
@@ -160,7 +161,7 @@ const buildRoleInstruction = (
       }
       const names = namesFor(privateView.werewolfIds);
       if (names.length > 0) {
-        return `Your fellow werewolf${names.length > 1 ? "s are" : " is"} ${names.join(", ")}.`;
+        return `Other werewolf${names.length > 1 ? "s" : ""}: ${names.join(", ")}.`;
       }
       return "No other werewolves were revealed.";
     }
@@ -168,6 +169,9 @@ const buildRoleInstruction = (
 
   if (roleKey === "minion" && privateView?.kind === "minionSawWerewolves") {
     if (!isParallelNight) {
+      if ((privateView.werewolfIds?.length ?? 0) === 0) {
+        return "No player is a werewolf.";
+      }
       return "Werewolves are highlighted. Memorize before discussion.";
     }
     const names = namesFor(privateView.werewolfIds);
@@ -274,8 +278,8 @@ const buildResultLines = (
       return privateView.isSolo ? ["You were the only werewolf in play."] : [];
     case "werewolfSawWerewolves":
       return privateView.werewolfIds.length > 0
-        ? [`Fellow werewolf${privateView.werewolfIds.length > 1 ? "s" : ""}: ${privateView.werewolfIds.map(nameFor).join(", ")}.`]
-        : ["No fellow werewolves were revealed."];
+        ? [`Other werewolf${privateView.werewolfIds.length > 1 ? "s" : ""}: ${privateView.werewolfIds.map(nameFor).join(", ")}.`]
+        : ["No other werewolves were revealed."];
     case "minionSawWerewolves":
       return privateView.werewolfIds.length > 0
         ? [`Werewolf${privateView.werewolfIds.length > 1 ? "s" : ""}: ${privateView.werewolfIds.map(nameFor).join(", ")}.`]
@@ -447,12 +451,43 @@ export const mapGameData = (
   const total = state.night ? Object.keys(state.night.completedThisStep).length : 0;
   const stepRole = state.night?.stepRole ?? "night";
   const nextStepRole = state.night?.nextStepRole ?? null;
+  const isDopplegangerInsomniacStep = !!state.night?.dopplegangerInsomniacStep;
   const stepLabel =
-    mappedPhase === "parallelResult" ? roleLabels[roleKey] ?? "Night" : roleLabels[stepRole] ?? "Night";
-  const nextStepLabel = nextStepRole ? roleLabels[nextStepRole] ?? null : null;
+    mappedPhase === "parallelResult"
+      ? roleLabels[roleKey] ?? "Night"
+      : isDopplegangerInsomniacStep
+      ? "Doppleganger Insomniac"
+      : roleLabels[stepRole] ?? "Night";
+  const nextStepLabel = nextStepRole
+    ? roleLabels[nextStepRole] ?? null
+    : isDopplegangerInsomniacStep
+    ? "Discussion"
+    : null;
   const playerNameById = new Map(state.players.map((item) => [item.playerId, item.name]));
   const isParallelNight = state.night?.mode === "parallel";
   const roleInstruction = buildRoleInstruction(roleKey, privateView, playerNameById, isParallelNight);
+  const roleDisplayKey =
+    privateView?.kind === "dopplegangerActAsRole" ||
+    privateView?.kind === "dopplegangerCopiedRole" ||
+    (privateView?.kind === "minionSawWerewolves" && !!privateView.targetPlayerId)
+      ? "doppleganger"
+      : roleKey;
+  const doppleFollowupRole =
+    stepRole === "doppleganger"
+      ? privateView?.kind === "dopplegangerActAsRole"
+        ? roleLabels[privateView.role] ?? privateView.role
+        : privateView?.kind === "minionSawWerewolves" && privateView.targetPlayerId
+        ? roleLabels.minion
+        : undefined
+      : undefined;
+  const dopplegangerActingNow =
+    stepRole === "doppleganger" &&
+    (privateView?.kind === "dopplegangerActAsRole" || privateView?.kind === "minionSawWerewolves");
+  const copiedRoleByPlayer = state.night?.copiedRoleByPlayer ?? {};
+  const copiedRoleForPlayer = playerId ? copiedRoleByPlayer[playerId] ?? null : null;
+  const dopplegangerImmediateRoles = new Set(["seer", "robber", "troublemaker", "drunk", "minion"]);
+  const isDopplegangerImmediateWindow =
+    stepRole === "doppleganger" && copiedRoleForPlayer !== null && dopplegangerImmediateRoles.has(copiedRoleForPlayer);
   const selectedRoleSet = new Set(state.roleSelection);
   const orderedSelectedRoles = [
     ...nightOrder.filter((role) => selectedRoleSet.has(role)),
@@ -471,17 +506,27 @@ export const mapGameData = (
       value: label,
     };
   });
+  if (selectedRoleSet.has("doppleganger") && selectedRoleSet.has("insomniac")) {
+    discussionTokenRoleOptions.push({
+      label: "Doppleganger Insomniac",
+      value: "Doppleganger Insomniac",
+    });
+  }
   const nightWaiting =
     state.night?.mode === "parallel"
       ? false
-      : (mappedPhase === "night" || mappedPhase === "parallelResult") && stepRole !== roleKey;
+      : (mappedPhase === "night" || mappedPhase === "parallelResult") &&
+        stepRole !== roleKey &&
+        !dopplegangerActingNow &&
+        !isDopplegangerImmediateWindow;
   const revealedRolesByCardId: Record<string, string> = {};
   const cardAnnotationsByCardId: Record<string, string> = {};
   const blinkCardIds = new Set<string>();
   const selectableCardIds: string[] = [];
   const inNightPhase = mappedPhase === "night" || mappedPhase === "parallelResult";
   const canShowActionReveal = (actionRole: string) =>
-    inNightPhase && (isParallelNight || stepRole === actionRole);
+    inNightPhase &&
+    (isParallelNight || stepRole === actionRole || (stepRole === "doppleganger" && copiedRoleForPlayer === actionRole));
 
   if (privateView?.kind === "werewolfSoloPeek" && canShowActionReveal("werewolf")) {
     revealedRolesByCardId[`center-${privateView.centerIndex}`] = privateView.role;
@@ -494,6 +539,19 @@ export const mapGameData = (
     if (isParallelNight) {
       cardAnnotationsByCardId[privateView.targetPlayerId] = "Seen by you";
     }
+  }
+  if (
+    (privateView?.kind === "dopplegangerCopiedRole" || privateView?.kind === "dopplegangerActAsRole") &&
+    canShowActionReveal("doppleganger")
+  ) {
+    revealedRolesByCardId[privateView.targetPlayerId] = privateView.role;
+  }
+  if (
+    privateView?.kind === "minionSawWerewolves" &&
+    privateView.targetPlayerId &&
+    canShowActionReveal("doppleganger")
+  ) {
+    revealedRolesByCardId[privateView.targetPlayerId] = "minion";
   }
   if (privateView?.kind === "seerViewCenter" && canShowActionReveal("seer")) {
     privateView.center.forEach((item) => {
@@ -532,7 +590,9 @@ export const mapGameData = (
       blinkCardIds.add(id);
       if (canShowActionReveal("werewolf")) {
         revealedRolesByCardId[id] = "werewolf";
-        cardAnnotationsByCardId[id] = "Fellow werewolf";
+        if (copiedRoleByPlayer[id] === "werewolf") {
+          cardAnnotationsByCardId[id] = "Doppleganger werewolf";
+        }
       }
     });
   }
@@ -541,7 +601,9 @@ export const mapGameData = (
       blinkCardIds.add(id);
       if (canShowActionReveal("minion")) {
         revealedRolesByCardId[id] = "werewolf";
-        cardAnnotationsByCardId[id] = "Werewolf";
+        if (copiedRoleByPlayer[id] === "werewolf") {
+          cardAnnotationsByCardId[id] = "Doppleganger werewolf";
+        }
       }
     });
   }
@@ -550,7 +612,6 @@ export const mapGameData = (
       blinkCardIds.add(id);
       if (canShowActionReveal("mason")) {
         revealedRolesByCardId[id] = "mason";
-        cardAnnotationsByCardId[id] = "Other mason";
       }
     });
   }
@@ -567,8 +628,8 @@ export const mapGameData = (
         phaseSecondsTotal: undefined,
         phaseEndsAt: state.phaseEndsAt,
         role: {
-          name: roleLabels[roleKey] ?? "Villager",
-          description: roleDescriptions[roleKey] ?? roleDescriptions.villager,
+          name: roleLabels[roleDisplayKey] ?? "Villager",
+          description: roleDescriptions[roleDisplayKey] ?? roleDescriptions.villager,
         },
         playerName,
         playerId,
@@ -593,6 +654,7 @@ export const mapGameData = (
         role: roleLabels[roleKey],
         roleInstruction,
         waiting: nightWaiting,
+        doppleFollowupRole,
         selectableCardIds,
         blinkCardIds: [...blinkCardIds],
         revealedRolesByCardId,

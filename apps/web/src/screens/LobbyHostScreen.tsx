@@ -251,7 +251,10 @@ export function LobbyHostScreen({
             if (!onStartGame || startLoading) return;
             setStartLoading(true);
             try {
-              await Promise.resolve(onStartGame());
+              const timeoutPromise = new Promise<never>((_, reject) => {
+                window.setTimeout(() => reject(new Error("Start game timed out")), 10000);
+              });
+              await Promise.race([Promise.resolve(onStartGame()), timeoutPromise]);
             } finally {
               setStartLoading(false);
             }

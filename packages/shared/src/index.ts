@@ -98,6 +98,7 @@ export type NightState = {
   totalSteps: number;
   completionByPlayer: Record<string, boolean>;
   copiedRoleByPlayer?: Record<string, Role | null>;
+  dopplegangerInsomniacStep?: boolean;
   endsAt?: number;
   mode?: "sequential" | "parallel";
   actionLog?: NightActionLogEntry[];
@@ -144,9 +145,9 @@ export type GameState = {
 export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: Role }
-  | { kind: "dopplegangerCopiedRole"; role: Role }
-  | { kind: "dopplegangerActAsRole"; role: Role }
-  | { kind: "minionSawWerewolves"; werewolfIds: string[] }
+  | { kind: "dopplegangerCopiedRole"; role: Role; targetPlayerId: string }
+  | { kind: "dopplegangerActAsRole"; role: Role; targetPlayerId: string }
+  | { kind: "minionSawWerewolves"; werewolfIds: string[]; targetPlayerId?: string }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
   | { kind: "werewolfSoloStatus"; isSolo: boolean }
@@ -176,6 +177,8 @@ export type PublicNightState = {
   totalSteps: number;
   endsAt?: number;
   mode?: "sequential" | "parallel";
+  copiedRoleByPlayer?: Record<string, Role | null>;
+  dopplegangerInsomniacStep?: boolean;
 };
 
 export type PublicTokensState = {

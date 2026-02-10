@@ -248,7 +248,7 @@ export const GameBoardScreen = forwardRef<
             <span className="phase-value">{data.phase}</span>
           </div>
           {typeof data.phaseSecondsRemaining === "number" ? (
-            <div className="phase-timer">
+            <div className={`phase-timer ${data.phaseSecondsRemaining <= 5 ? "phase-timer-critical" : ""}`}>
               {String(Math.floor(data.phaseSecondsRemaining / 60)).padStart(2, "0")}:
               {String(data.phaseSecondsRemaining % 60).padStart(2, "0")}
             </div>
