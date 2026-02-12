@@ -209,6 +209,12 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
             await fetchSnapshot();
             return;
           }
+          // If server version moved, refresh snapshot even when the visible event
+          // batch is empty (e.g. filtered/private-only or missed stream timing).
+          if (events.toVersion > lastSnapshotVersionRef.current) {
+            await fetchSnapshot();
+            return;
+          }
           if (events.events.length > 0) {
             await fetchSnapshot();
           }
