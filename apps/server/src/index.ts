@@ -24,7 +24,6 @@ import {
 } from "@werewolf/shared";
 
 const PORT = Number(process.env.PORT ?? 4000);
-const DEBUG_COMMANDS = process.env.DEBUG_COMMANDS !== "0";
 const FASTIFY_LOG_LEVEL = process.env.FASTIFY_LOG_LEVEL ?? "info";
 
 const DEFAULT_SETTINGS: GameSettings = {
@@ -40,16 +39,11 @@ const DEFAULT_SETTINGS: GameSettings = {
   parallelNight: false,
 };
 const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT ?? 150);
-const TRACED_COMMANDS = new Set(["UPDATE_SETTINGS", "START_GAME", "RESET_GAME"]);
-const TRACE_JOIN = process.env.TRACE_JOIN !== "0";
-
-const logCommand = (message: string, details: Record<string, unknown>) => {
-  if (!DEBUG_COMMANDS) return;
-  app.log.info(details, `[commands] ${message}`);
-};
 const logJoin = (message: string, details: Record<string, unknown>) => {
-  if (!TRACE_JOIN) return;
   app.log.info(details, `[join] ${message}`);
+};
+const logGame = (message: string, details: Record<string, unknown>) => {
+  app.log.info(details, `[game] ${message}`);
 };
 
 type GameRecord = {
@@ -1125,20 +1119,24 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
   }
 };
 
-const app = fastify({ logger: { level: FASTIFY_LOG_LEVEL } });
-app.register(cors, { origin: true });
-app.addHook("onRequest", (request, _reply, done) => {
-  const isJoinRoute = /^\/games\/[^/]+\/join(?:\?|$)/.test(request.url);
-  if (isJoinRoute && (request.method === "OPTIONS" || request.method === "POST")) {
-    logJoin("request", {
-      method: request.method,
-      url: request.url,
-      origin: request.headers.origin ?? null,
-      referer: request.headers.referer ?? null,
-    });
-  }
-  done();
+const logger = {
+  level: FASTIFY_LOG_LEVEL,
+  transport: {
+    target: "pino-pretty",
+    options: {
+      colorize: false,
+      translateTime: "SYS:standard",
+      singleLine: true,
+      ignore: "pid,hostname,reqId",
+    },
+  },
+};
+
+const app = fastify({
+  logger,
+  disableRequestLogging: true,
 });
+app.register(cors, { origin: true });
 
 app.post(
   "/games",
@@ -1257,6 +1255,13 @@ app.post(
 
   const response: JoinGameResponse = { playerId, name, secret, version: record.version };
   appendEvent(record, "PLAYER_JOINED", { playerId, name });
+  logGame("join", {
+    gameId,
+    playerId,
+    name,
+    players: record.state.playerOrder.length,
+    maxPlayers: record.state.maxPlayers,
+  });
   logJoin("accepted", {
     gameId,
     playerId,
@@ -1319,41 +1324,12 @@ app.post(
 
   const commandType = body.command.type;
   const isHost = record.state.hostPlayerId === body.playerId;
-  const trace = TRACED_COMMANDS.has(commandType);
-  const startedAt = Date.now();
-  if (trace) {
-    logCommand("received", {
-      gameId,
-      commandType,
-      playerId: body.playerId,
-      isHost,
-      phase: record.state.phase,
-      version: record.version,
-    });
-  }
 
   if (commandType === "UPDATE_SETTINGS") {
     if (!isHost || record.state.phase !== "lobby") {
-      if (trace) {
-        logCommand("rejected", {
-          gameId,
-          commandType,
-          reason: "Host only in lobby",
-          phase: record.state.phase,
-          isHost,
-        });
-      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
     }
     const settings = (body.command as any).payload?.settings as Partial<GameSettings>;
-    if (trace) {
-      logCommand("applying_settings", {
-        gameId,
-        commandType,
-        phase: record.state.phase,
-        settings,
-      });
-    }
     record.state.settings = { ...record.state.settings, ...settings };
     record.state.updatedAt = Date.now();
   }
@@ -1383,37 +1359,12 @@ app.post(
 
   if (commandType === "START_GAME") {
     if (!isHost || record.state.phase !== "lobby") {
-      if (trace) {
-        logCommand("rejected", {
-          gameId,
-          commandType,
-          reason: "Host only in lobby",
-          phase: record.state.phase,
-          isHost,
-        });
-      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only in lobby" });
-    }
-    if (trace) {
-      logCommand("starting_game", {
-        gameId,
-        players: record.state.playerOrder.length,
-        selectedRoles: record.state.roleSelection.roles.length,
-        settings: record.state.settings,
-      });
     }
     clearAllPhaseTimers(record);
     try {
       assignRoles(record.state);
-    } catch (err) {
-      if (trace) {
-        logCommand("failed", {
-          gameId,
-          commandType,
-          reason: "Role selection invalid",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    } catch {
       return reply.code(400).send({ error: "INVALID_ROLES", message: "Role selection invalid" });
     }
     record.state.phase = "deal";
@@ -1433,6 +1384,11 @@ app.post(
       }
     });
     clearDealTimer(record);
+    logGame("start_game", {
+      gameId,
+      players: record.state.playerOrder.length,
+      selectedRoles: record.state.roleSelection.roles.length,
+    });
   }
 
   if (commandType === "ACK_ROLE") {
@@ -1572,6 +1528,7 @@ app.post(
     removePlayerFromState(record, body.playerId);
     record.state.updatedAt = Date.now();
     appendEvent(record, "PLAYER_LEFT", { playerId: body.playerId });
+    logGame("leave", { gameId, playerId: body.playerId });
   }
 
   if (commandType === "KICK_PLAYER") {
@@ -1622,27 +1579,12 @@ app.post(
     }
     clearVotingTimer(record);
     revealVotingResults(record);
+    logGame("end_game", { gameId, winners: record.state.reveal?.winners ?? "unknown" });
   }
 
   if (commandType === "RESET_GAME") {
     if (!isHost) {
-      if (trace) {
-        logCommand("rejected", {
-          gameId,
-          commandType,
-          reason: "Host only",
-          phase: record.state.phase,
-          isHost,
-        });
-      }
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only" });
-    }
-    if (trace) {
-      logCommand("resetting_game", {
-        gameId,
-        phase: record.state.phase,
-        version: record.version,
-      });
     }
     clearAllPhaseTimers(record);
     record.privateViews.clear();
@@ -1662,19 +1604,10 @@ app.post(
       if (player) player.ready = id === record.state.hostPlayerId;
     });
     record.state.updatedAt = Date.now();
+    logGame("reset_game", { gameId });
   }
 
   const event = appendEvent(record, commandType, { playerId: body.playerId, command: body.command });
-  if (trace) {
-    logCommand("completed", {
-      gameId,
-      commandType,
-      durationMs: Date.now() - startedAt,
-      phase: record.state.phase,
-      version: record.version,
-      appliedVersion: event.version,
-    });
-  }
   const response: CommandResponse = {
     accepted: true,
     appliedVersion: record.version,
@@ -1805,6 +1738,9 @@ app.get(
     existing.add(reply.raw);
     record.privateStreams.set(playerId, existing);
   }
+  if (playerId) {
+    logGame("reconnect", { gameId, playerId });
+  }
 
   sendSseSafe(record, reply.raw, "hello", { serverVersion: record.version });
   const backlog = record.events.filter((event) => event.version > since);
@@ -1836,6 +1772,9 @@ app.get(
         if (existing.size === 0) record.privateStreams.delete(playerId);
       }
     }
+    if (playerId) {
+      logGame("disconnect", { gameId, playerId });
+    }
   });
 
     reply.hijack();
@@ -1848,8 +1787,8 @@ app.setNotFoundHandler((_, reply) => {
 
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) {
-    console.error(err);
+    app.log.error({ err }, "Failed to start server");
     process.exit(1);
   }
-  console.log(`[server] Fastify REST + SSE listening on :${PORT}`);
+  app.log.info({ port: PORT }, "Fastify REST + SSE listening");
 });

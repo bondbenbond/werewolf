@@ -16,9 +16,7 @@ services:
     container_name: werewolf-server-test
     environment:
       NODE_ENV: ${NODE_ENV}
-      FASTIFY_LOG_LEVEL: warn
-      DEBUG_COMMANDS: "0"
-      TRACE_JOIN: "0"
+      FASTIFY_LOG_LEVEL: info
     expose:
       - "4000"
     logging:
