@@ -88,6 +88,7 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
         <section className="lobby-section">
           <div className="section-header">
             <h3>Roles</h3>
+            <p className="lede">Host has selected:</p>
             <div className="summary-row">
               <span className="summary-pill">Players: {data.players.length}</span>
               <span className="summary-pill">

@@ -2472,10 +2472,10 @@ input[type="number"] {
 
 .board-shell {
   min-height: 100svh;
-  height: 100svh;
+  height: auto;
   padding: clamp(6px, 2vw, 18px);
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .board-top {
@@ -2607,11 +2607,13 @@ input[type="number"] {
 }
 
 .card-note {
+  width: 100%;
   font-size: 10px;
   font-weight: 700;
   color: rgba(191, 219, 254, 0.95);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  text-align: center;
 }
 
 @keyframes cardBlink {
@@ -3020,6 +3022,7 @@ input[type="number"] {
 /* Layout overrides to make nav and table full-bleed */
 .game-shell {
   padding: 0 !important;
+  overflow: visible !important;
 }
 
 .board {
@@ -3168,4 +3171,23 @@ input[type="number"] {
   font-weight: 700;
   font-size: 12px;
   color: #e2e8f0;
+}
+
+.phase-timer.phase-timer-critical {
+  background: rgba(220, 38, 38, 0.26);
+  border-color: rgba(248, 113, 113, 0.9);
+  color: #fee2e2;
+  animation: phaseTimerCriticalBlink 0.8s ease-in-out infinite;
+}
+
+@keyframes phaseTimerCriticalBlink {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 rgba(220, 38, 38, 0);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 14px rgba(248, 113, 113, 0.75);
+  }
 }

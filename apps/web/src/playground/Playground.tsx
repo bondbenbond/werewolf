@@ -90,19 +90,64 @@ export function Playground() {
     return () => window.clearInterval(timer);
   }, [useLive]);
 
+  const runCommandWithTimeout = async (command: { type: string; payload?: Record<string, unknown> }) => {
+    const timeoutMs = 10000;
+    let timeoutId: number | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error("Command timed out. Please try again.")), timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        sendCommand(env, liveGameId, {
+          playerId: livePlayerId,
+          secret: liveSecret,
+          lastKnownVersion: live.version ?? live.snapshot?.version ?? 0,
+          command,
+        }),
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  };
+
   const sendLiveCommand = async (command: { type: string; payload?: Record<string, unknown> }) => {
     if (!useLive || !liveGameId || !livePlayerId || !liveSecret) return;
     try {
       setCommandError(null);
-      await sendCommand(env, liveGameId, {
-        playerId: livePlayerId,
-        secret: liveSecret,
-        lastKnownVersion: live.version ?? live.snapshot?.version ?? 0,
-        command,
-      });
+      await runCommandWithTimeout(command);
     } catch (error) {
       setCommandError((error as Error).message);
     }
+  };
+  const sendLiveCommandStrict = async (command: { type: string; payload?: Record<string, unknown> }) => {
+    if (!useLive || !liveGameId || !livePlayerId || !liveSecret) {
+      throw new Error("Missing live session credentials");
+    }
+    try {
+      setCommandError(null);
+      await runCommandWithTimeout(command);
+    } catch (error) {
+      setCommandError((error as Error).message);
+      throw error;
+    }
+  };
+  const handleEndGameAndExit = () => {
+    void sendLiveCommandStrict({ type: "RESET_GAME" }).then(() => {
+      clearSession();
+      window.location.href = "/";
+    });
+  };
+  const handleEndGameToLobby = () => {
+    void sendLiveCommand({ type: "RESET_GAME" });
+  };
+  const handleLeaveAndExit = () => {
+    void sendLiveCommandStrict({ type: "LEAVE_GAME" }).then(() => {
+      clearSession();
+      window.location.href = "/";
+    });
   };
 
   return (
@@ -510,8 +555,8 @@ export function Playground() {
                 }
               : undefined
           }
-          onStartGame={liveLobby ? () => sendLiveCommand({ type: "START_GAME" }) : undefined}
-          onEndGame={liveLobby ? () => sendLiveCommand({ type: "RESET_GAME" }) : undefined}
+          onStartGame={liveLobby ? () => sendLiveCommandStrict({ type: "START_GAME" }) : undefined}
+          onEndGame={liveLobby ? handleEndGameAndExit : undefined}
           onKickPlayer={
             liveLobby ? (playerId) => sendLiveCommand({ type: "KICK_PLAYER", payload: { playerId } }) : undefined
           }
@@ -531,14 +576,7 @@ export function Playground() {
           currentPlayerId={liveLobby ? livePlayerId : undefined}
           onSetReady={liveLobby ? (ready) => sendLiveCommand({ type: "SET_READY", payload: { ready } }) : undefined}
           onLeave={
-            liveLobby
-              ? () => {
-                  sendLiveCommand({ type: "LEAVE_GAME" }).finally(() => {
-                    clearSession();
-                    window.location.href = "/";
-                  });
-                }
-              : undefined
+            liveLobby ? handleLeaveAndExit : undefined
           }
         />
       )}
@@ -555,7 +593,7 @@ export function Playground() {
           }
           onStartVoting={liveGame ? () => sendLiveCommand({ type: "START_VOTING" }) : undefined}
           onRevealResults={liveGame ? () => sendLiveCommand({ type: "REVEAL_RESULTS" }) : undefined}
-          onEndGame={liveGame ? () => sendLiveCommand({ type: "RESET_GAME" }) : undefined}
+          onEndGame={liveGame ? handleEndGameToLobby : undefined}
           onSubmitVote={
             liveGame ? (targetPlayerId) => sendLiveCommand({ type: "SUBMIT_VOTE", payload: { targetPlayerId } }) : undefined
           }

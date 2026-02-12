@@ -43,6 +43,8 @@ export type PublicGameState = {
     totalSteps: number;
     endsAt?: number;
     mode?: "sequential" | "parallel";
+    copiedRoleByPlayer?: Record<string, string | null>;
+    dopplegangerInsomniacStep?: boolean;
   };
   tokens?: {
     tokensByPlayer: Record<string, Record<string, number>>;
@@ -57,15 +59,16 @@ export type PublicGameState = {
     winners?: string;
     finalRoles?: Record<string, string>;
     centerRoles?: string[];
+    originalRoles?: Record<string, string>;
   };
 };
 
 export type PrivateView =
   | { kind: "none" }
   | { kind: "yourOriginalRole"; role: string }
-  | { kind: "dopplegangerCopiedRole"; role: string }
-  | { kind: "dopplegangerActAsRole"; role: string }
-  | { kind: "minionSawWerewolves"; werewolfIds: string[] }
+  | { kind: "dopplegangerCopiedRole"; role: string; targetPlayerId: string }
+  | { kind: "dopplegangerActAsRole"; role: string; targetPlayerId: string }
+  | { kind: "minionSawWerewolves"; werewolfIds: string[]; targetPlayerId?: string }
   | { kind: "masonSawMasons"; masonIds: string[] }
   | { kind: "werewolfSawWerewolves"; werewolfIds: string[] }
   | { kind: "werewolfSoloStatus"; isSolo: boolean }
@@ -203,6 +206,12 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
           }
           if (forceSnapshotRef.current) {
             forceSnapshotRef.current = false;
+            await fetchSnapshot();
+            return;
+          }
+          // If server version moved, refresh snapshot even when the visible event
+          // batch is empty (e.g. filtered/private-only or missed stream timing).
+          if (events.toVersion > lastSnapshotVersionRef.current) {
             await fetchSnapshot();
             return;
           }
