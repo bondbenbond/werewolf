@@ -1733,13 +1733,15 @@ app.get(
   });
 
   record.streams.add(reply.raw);
+  let hadExistingPrivateStream = false;
   if (playerId) {
     const existing = record.privateStreams.get(playerId) ?? new Set();
+    hadExistingPrivateStream = existing.size > 0;
     existing.add(reply.raw);
     record.privateStreams.set(playerId, existing);
   }
   if (playerId) {
-    logGame("reconnect", { gameId, playerId });
+    logGame(hadExistingPrivateStream ? "reconnect" : "connect", { gameId, playerId });
   }
 
   sendSseSafe(record, reply.raw, "hello", { serverVersion: record.version });
