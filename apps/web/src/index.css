@@ -2607,11 +2607,13 @@ input[type="number"] {
 }
 
 .card-note {
+  width: 100%;
   font-size: 10px;
   font-weight: 700;
   color: rgba(191, 219, 254, 0.95);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  text-align: center;
 }
 
 @keyframes cardBlink {

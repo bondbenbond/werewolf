@@ -25,6 +25,7 @@ import {
 
 const PORT = Number(process.env.PORT ?? 4000);
 const DEBUG_COMMANDS = process.env.DEBUG_COMMANDS !== "0";
+const FASTIFY_LOG_LEVEL = process.env.FASTIFY_LOG_LEVEL ?? "info";
 
 const DEFAULT_SETTINGS: GameSettings = {
   nightStepSeconds: 10,
@@ -40,10 +41,15 @@ const DEFAULT_SETTINGS: GameSettings = {
 };
 const HISTORY_LIMIT = Number(process.env.HISTORY_LIMIT ?? 150);
 const TRACED_COMMANDS = new Set(["UPDATE_SETTINGS", "START_GAME", "RESET_GAME"]);
+const TRACE_JOIN = process.env.TRACE_JOIN !== "0";
 
 const logCommand = (message: string, details: Record<string, unknown>) => {
   if (!DEBUG_COMMANDS) return;
-  console.info(`[commands] ${message}`, details);
+  app.log.info(details, `[commands] ${message}`);
+};
+const logJoin = (message: string, details: Record<string, unknown>) => {
+  if (!TRACE_JOIN) return;
+  app.log.info(details, `[join] ${message}`);
 };
 
 type GameRecord = {
@@ -229,6 +235,7 @@ const buildPublicState = (state: GameState): PublicGameState => {
           winners: state.reveal.winners,
           finalRoles: state.reveal.finalRolesByPlayer,
           centerRoles: state.reveal.centerRoles,
+          originalRoles: state.roles?.originalRolesByPlayer,
         }
       : undefined,
   };
@@ -733,9 +740,6 @@ const startNight = (record: GameRecord) => {
     if (record.state.settings.autoAdvanceNight) {
       record.nightStepTimer = setTimeout(() => {
         if (record.state.phase !== "night" || record.state.night?.stepIndex !== 0) return;
-        if (record.state.night?.stepRole === "insomniac") {
-          emitPendingDopplegangerInsomniacPeeks(record);
-        }
         advanceNightStep(record);
         appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
       }, getNightStepMs(record, stepRole));
@@ -795,9 +799,6 @@ const advanceNightStep = (record: GameRecord) => {
     if (record.state.settings.autoAdvanceNight) {
       record.nightStepTimer = setTimeout(() => {
         if (record.state.phase !== "night" || record.state.night?.stepIndex !== nextIndex) return;
-        if (record.state.night?.stepRole === "insomniac") {
-          emitPendingDopplegangerInsomniacPeeks(record);
-        }
         advanceNightStep(record);
         appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
       }, getNightStepMs(record, "insomniac"));
@@ -832,9 +833,6 @@ const advanceNightStep = (record: GameRecord) => {
   if (record.state.settings.autoAdvanceNight) {
     record.nightStepTimer = setTimeout(() => {
       if (record.state.phase !== "night" || record.state.night?.stepIndex !== nextIndex) return;
-      if (record.state.night?.stepRole === "insomniac") {
-        emitPendingDopplegangerInsomniacPeeks(record);
-      }
       advanceNightStep(record);
       appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
     }, getNightStepMs(record, stepRole));
@@ -1127,8 +1125,20 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
   }
 };
 
-const app = fastify({ logger: false });
+const app = fastify({ logger: { level: FASTIFY_LOG_LEVEL } });
 app.register(cors, { origin: true });
+app.addHook("onRequest", (request, _reply, done) => {
+  const isJoinRoute = /^\/games\/[^/]+\/join(?:\?|$)/.test(request.url);
+  if (isJoinRoute && (request.method === "OPTIONS" || request.method === "POST")) {
+    logJoin("request", {
+      method: request.method,
+      url: request.url,
+      origin: request.headers.origin ?? null,
+      referer: request.headers.referer ?? null,
+    });
+  }
+  done();
+});
 
 app.post(
   "/games",
@@ -1153,7 +1163,7 @@ app.post(
     phase: "lobby",
     phaseEndsAt: undefined,
     hostPlayerId: hostId,
-    maxPlayers: 10,
+    maxPlayers: 12,
     playersById: {
       [hostId]: { playerId: hostId, name: hostName, connected: true, ready: true },
     },
@@ -1200,12 +1210,33 @@ app.post(
   },
   async (request, reply) => {
   const { gameId } = request.params as { gameId: string };
+  const startedAt = Date.now();
+  const origin = request.headers.origin ?? null;
   const record = games.get(gameId);
   if (!record) {
+    logJoin("rejected", { gameId, reason: "GAME_NOT_FOUND", origin, durationMs: Date.now() - startedAt });
     return reply.code(404).send({ error: "GAME_NOT_FOUND", message: "Game not found" });
   }
   if (record.state.phase !== "lobby") {
+    logJoin("rejected", {
+      gameId,
+      reason: "ROOM_IN_PROGRESS",
+      phase: record.state.phase,
+      origin,
+      durationMs: Date.now() - startedAt,
+    });
     return reply.code(400).send({ error: "ROOM_IN_PROGRESS", message: "Game already started" });
+  }
+  if (record.state.playerOrder.length >= record.state.maxPlayers) {
+    logJoin("rejected", {
+      gameId,
+      reason: "ROOM_FULL",
+      players: record.state.playerOrder.length,
+      maxPlayers: record.state.maxPlayers,
+      origin,
+      durationMs: Date.now() - startedAt,
+    });
+    return reply.code(400).send({ error: "ROOM_FULL", message: "Room is full" });
   }
 
   const body = request.body as { name?: string };
@@ -1226,6 +1257,15 @@ app.post(
 
   const response: JoinGameResponse = { playerId, name, secret, version: record.version };
   appendEvent(record, "PLAYER_JOINED", { playerId, name });
+  logJoin("accepted", {
+    gameId,
+    playerId,
+    name,
+    players: record.state.playerOrder.length,
+    maxPlayers: record.state.maxPlayers,
+    origin,
+    durationMs: Date.now() - startedAt,
+  });
   return reply.code(201).send(response);
   }
 );
@@ -1419,9 +1459,6 @@ app.post(
   if (commandType === "ADVANCE_NIGHT_STEP") {
     if (!isHost || (record.state.phase !== "night" && record.state.phase !== "parallelResult")) {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during night" });
-    }
-    if (record.state.phase === "night" && record.state.night?.stepRole === "insomniac") {
-      emitPendingDopplegangerInsomniacPeeks(record);
     }
     advanceNightStep(record);
     record.state.updatedAt = Date.now();

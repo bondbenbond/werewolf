@@ -49,6 +49,7 @@ export function LobbyHostScreen({
   const [settings, setSettings] = useState(data.settings);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied">("idle");
   const [startLoading, setStartLoading] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const [endLoading, setEndLoading] = useState(false);
   const [roleCounts, setRoleCounts] = useState<Record<string, number>>(
     Object.fromEntries(data.roles.map((role) => [role.name, role.count]))
@@ -249,12 +250,15 @@ export function LobbyHostScreen({
           disabled={!rolesComplete || !onStartGame}
           onClick={async () => {
             if (!onStartGame || startLoading) return;
+            setStartError(null);
             setStartLoading(true);
             try {
               const timeoutPromise = new Promise<never>((_, reject) => {
                 window.setTimeout(() => reject(new Error("Start game timed out")), 10000);
               });
               await Promise.race([Promise.resolve(onStartGame()), timeoutPromise]);
+            } catch (error) {
+              setStartError((error as Error).message);
             } finally {
               setStartLoading(false);
             }
@@ -262,6 +266,7 @@ export function LobbyHostScreen({
         >
           Start game
         </Button>
+        {startError ? <span className="error-text">{startError}</span> : null}
         <Button
           size="small"
           variant="ghost"

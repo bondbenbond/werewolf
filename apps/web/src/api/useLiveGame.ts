@@ -59,6 +59,7 @@ export type PublicGameState = {
     winners?: string;
     finalRoles?: Record<string, string>;
     centerRoles?: string[];
+    originalRoles?: Record<string, string>;
   };
 };
 

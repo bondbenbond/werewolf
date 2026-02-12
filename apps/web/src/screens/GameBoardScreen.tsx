@@ -172,9 +172,11 @@ export const GameBoardScreen = forwardRef<
     const isBlinking = blinkSet.has(card.id);
     const isEliminated = eliminatedSet.has(card.id);
     const isWinner = winnerSet.has(card.id);
-    const revealedRole = revealedRoleByCardId?.[card.id];
-    const faceImage = cardsFaceUp ? roleImage : imageForRole(revealedRole);
     const note = cardNoteById?.[card.id];
+    const revealedRole = revealedRoleByCardId?.[card.id];
+    const effectiveRevealedRole =
+      note?.toLowerCase() === "doppleganger werewolf" ? "doppleganger" : revealedRole;
+    const faceImage = cardsFaceUp ? roleImage : imageForRole(effectiveRevealedRole);
     return (
       <div key={card.id} className="card-stack">
         <div
@@ -191,7 +193,7 @@ export const GameBoardScreen = forwardRef<
           }}
         >
           <div
-            className={`card-face ${revealedRole || cardsFaceUp ? "up" : "down"}`}
+            className={`card-face ${effectiveRevealedRole || cardsFaceUp ? "up" : "down"}`}
             style={{
               backgroundImage: `url(${faceImage})`,
             }}

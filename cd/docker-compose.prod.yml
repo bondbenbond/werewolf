@@ -16,8 +16,16 @@ services:
     container_name: werewolf-server
     environment:
       NODE_ENV: ${NODE_ENV}
+      FASTIFY_LOG_LEVEL: warn
+      DEBUG_COMMANDS: "0"
+      TRACE_JOIN: "0"
     expose:
       - "4000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       caddy-net:
         aliases:

@@ -555,7 +555,7 @@ export function Playground() {
                 }
               : undefined
           }
-          onStartGame={liveLobby ? () => sendLiveCommand({ type: "START_GAME" }) : undefined}
+          onStartGame={liveLobby ? () => sendLiveCommandStrict({ type: "START_GAME" }) : undefined}
           onEndGame={liveLobby ? handleEndGameAndExit : undefined}
           onKickPlayer={
             liveLobby ? (playerId) => sendLiveCommand({ type: "KICK_PLAYER", payload: { playerId } }) : undefined

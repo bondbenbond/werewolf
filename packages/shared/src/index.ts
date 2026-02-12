@@ -196,6 +196,7 @@ export type PublicRevealState = {
   winners?: Winners;
   finalRoles?: Record<string, Role>;
   centerRoles?: Role[];
+  originalRoles?: Record<string, Role>;
 };
 
 export type PublicGameState = {
