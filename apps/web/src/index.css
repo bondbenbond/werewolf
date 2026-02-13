@@ -620,6 +620,7 @@ select.input {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  align-items: start;
 }
 
 .lobby-section {
@@ -629,6 +630,7 @@ select.input {
   padding: 14px;
   display: grid;
   gap: 12px;
+  min-height: 0;
 }
 
 .section-header h3 {
@@ -909,6 +911,7 @@ select.input {
 .players-list {
   display: grid;
   gap: 8px;
+  align-content: start;
 }
 
 .player-ready-cta {
@@ -929,7 +932,7 @@ select.input {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-radius: 12px;
   background: rgba(14, 22, 38, 0.6);
   border: 1px solid rgba(226, 232, 240, 0.15);
@@ -962,6 +965,71 @@ select.input {
   background: rgba(248, 113, 113, 0.12);
   border-color: rgba(248, 113, 113, 0.45);
   color: #fecaca;
+}
+
+@media (min-width: 1100px) {
+  .lobby-shell {
+    gap: 14px;
+    max-width: 1060px;
+    margin: 0 auto;
+    padding-bottom: calc(var(--host-bar-h) + 24px + var(--safe-bottom));
+  }
+
+  .lobby-grid {
+    grid-template-columns: minmax(520px, 1.15fr) minmax(420px, 0.95fr);
+    gap: 14px;
+  }
+
+  .lobby-section {
+    padding: 14px 16px;
+    gap: 10px;
+  }
+
+  .section-header h3 {
+    font-size: 30px;
+    margin-bottom: 6px;
+  }
+
+  .role-chip-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .role-chip {
+    min-height: 50px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .role-chip-info {
+    font-size: 15px;
+  }
+
+  .role-chip-count {
+    font-size: 13px;
+    padding: 1px 9px;
+  }
+
+  .players-list {
+    max-height: clamp(240px, 42vh, 460px);
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .player-row {
+    min-height: 56px;
+    border-radius: 12px;
+    padding: 8px 10px;
+  }
+
+  .player-row strong {
+    font-size: 16px;
+  }
+
+  .lobby-bottom-bar {
+    width: min(420px, calc(100vw - 32px));
+    justify-content: center;
+  }
 }
 
 .status-pill.ready {
@@ -2619,10 +2687,10 @@ input[type="number"] {
 @keyframes cardBlink {
   0%,
   100% {
-    box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.45), 0 10px 20px rgba(251, 191, 36, 0.15);
+    box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.55), 0 10px 20px rgba(34, 197, 94, 0.2);
   }
   50% {
-    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.95), 0 0 22px rgba(251, 191, 36, 0.45);
+    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.98), 0 0 24px rgba(34, 197, 94, 0.55);
   }
 }
 

@@ -94,6 +94,7 @@ export function GameScreen({
   const [discussionTokens, setDiscussionTokens] = useState<Record<string, string | null>>({});
   const [voteCounts, setVoteCounts] = useState<Record<string, number>>({});
   const [votingReady, setVotingReady] = useState(false);
+  const [votingCountdownRemaining, setVotingCountdownRemaining] = useState<number | null>(null);
   const [discussionHintVisible, setDiscussionHintVisible] = useState(false);
   const [hostNextLoading, setHostNextLoading] = useState(false);
   const [hostEndLoading, setHostEndLoading] = useState(false);
@@ -155,6 +156,7 @@ export function GameScreen({
     if (data.phase !== "voting") {
       setVoteCounts({});
       setVotingReady(false);
+      setVotingCountdownRemaining(null);
     }
   }, [data.phase]);
 
@@ -163,10 +165,20 @@ export function GameScreen({
       return undefined;
     }
     setVotingReady(false);
-    const timeout = window.setTimeout(() => {
-      setVotingReady(true);
-    }, 2000);
-    return () => window.clearTimeout(timeout);
+    const gateEndsAt = Date.now() + 2000;
+    const update = () => {
+      const remaining = Math.max(0, Math.ceil((gateEndsAt - Date.now()) / 1000));
+      setVotingCountdownRemaining(remaining);
+      if (remaining <= 0) {
+        setVotingReady(true);
+      }
+    };
+    update();
+    const timer = window.setInterval(update, 200);
+    return () => {
+      window.clearInterval(timer);
+      setVotingCountdownRemaining(null);
+    };
   }, [data.phase]);
 
   useEffect(() => {
@@ -342,11 +354,17 @@ export function GameScreen({
     if (data.phase === "deal") {
       return { label: "Start night", onClick: onStartNight, disabled: !onStartNight };
     }
-    if (parallelNightFlow && data.phase === "night") {
+    if (parallelNightFlow && autoAdvanceFlow && data.phase === "night") {
       return { label: "Auto advancing", onClick: undefined, disabled: true };
     }
-    if (parallelNightFlow && data.phase === "parallelResult") {
+    if (parallelNightFlow && autoAdvanceFlow && data.phase === "parallelResult") {
       return { label: "Showing results", onClick: undefined, disabled: true };
+    }
+    if (parallelNightFlow && data.phase === "night") {
+      return { label: "Show results", onClick: onAdvanceNightStep, disabled: !onAdvanceNightStep };
+    }
+    if (parallelNightFlow && data.phase === "parallelResult") {
+      return { label: "Next phase", onClick: onAdvanceNightStep, disabled: !onAdvanceNightStep };
     }
     if (autoAdvanceFlow && data.phase === "night") {
       return { label: "Auto advancing", onClick: undefined, disabled: true };
@@ -373,7 +391,7 @@ export function GameScreen({
   }, [autoAdvanceFlow, data.phase, onAdvanceNightStep, onEndGame, onRevealResults, onStartNight, onStartVoting, parallelNightFlow]);
   const showHostProgressButton = !(
     (autoAdvanceFlow && data.phase === "night") ||
-    (parallelNightFlow && (data.phase === "night" || data.phase === "parallelResult"))
+    (autoAdvanceFlow && parallelNightFlow && (data.phase === "night" || data.phase === "parallelResult"))
   );
   const revealRolesByCardId = revealResultsVisible ? data.reveal.finalRoleByCardId : undefined;
   const revealEliminatedIds = revealResultsVisible ? data.reveal.eliminatedPlayerIds : undefined;
@@ -552,6 +570,7 @@ export function GameScreen({
         nightResultLines={data.night.resultLines}
         discussionHintVisible={discussionHintVisible}
         votingReady={votingReady}
+        votingCountdownRemaining={votingCountdownRemaining}
         revealResultsVisible={revealResultsVisible}
         revealWinners={data.reveal.winners}
         revealEliminated={data.reveal.eliminated}

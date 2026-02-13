@@ -271,6 +271,10 @@ const buildResultLines = (
   if (!privateView) return [];
 
   switch (privateView.kind) {
+    case "none":
+      return [];
+    case "yourOriginalRole":
+      return [];
     case "werewolfSoloPeek":
       return [
         "You were the only werewolf in play.",
@@ -505,6 +509,11 @@ export const mapGameData = (
   const dopplegangerImmediateRoles = new Set(["seer", "robber", "troublemaker", "drunk", "minion"]);
   const isDopplegangerImmediateWindow =
     stepRole === "doppleganger" && copiedRoleForPlayer !== null && dopplegangerImmediateRoles.has(copiedRoleForPlayer);
+  const isCopiedImmediateRoleStepAlreadyConsumed =
+    stepRole !== "doppleganger" &&
+    copiedRoleForPlayer !== null &&
+    dopplegangerImmediateRoles.has(copiedRoleForPlayer) &&
+    stepRole === copiedRoleForPlayer;
   const selectedRoleSet = new Set(state.roleSelection);
   const orderedSelectedRoles = [
     ...nightOrder.filter((role) => selectedRoleSet.has(role)),
@@ -527,9 +536,8 @@ export const mapGameData = (
     state.night?.mode === "parallel"
       ? false
       : (mappedPhase === "night" || mappedPhase === "parallelResult") &&
-        stepRole !== roleKey &&
-        !dopplegangerActingNow &&
-        !isDopplegangerImmediateWindow;
+        (isCopiedImmediateRoleStepAlreadyConsumed ||
+          (stepRole !== roleKey && !dopplegangerActingNow && !isDopplegangerImmediateWindow));
   const revealedRolesByCardId: Record<string, string> = {};
   const cardAnnotationsByCardId: Record<string, string> = {};
   const blinkCardIds = new Set<string>();
@@ -610,7 +618,7 @@ export const mapGameData = (
   if (privateView?.kind === "werewolfSawWerewolves") {
     privateView.werewolfIds.filter((id) => id !== playerId).forEach((id) => {
       blinkCardIds.add(id);
-      if (canShowActionReveal("werewolf")) {
+      if (isParallelNight && canShowActionReveal("werewolf")) {
         if (copiedRoleByPlayer[id] === "werewolf") {
           revealedRolesByCardId[id] = "doppleganger";
           cardAnnotationsByCardId[id] = "Doppleganger werewolf";
@@ -623,7 +631,7 @@ export const mapGameData = (
   if (privateView?.kind === "minionSawWerewolves") {
     privateView.werewolfIds.forEach((id) => {
       blinkCardIds.add(id);
-      if (canShowActionReveal("minion")) {
+      if (isParallelNight && canShowActionReveal("minion")) {
         if (copiedRoleByPlayer[id] === "werewolf") {
           revealedRolesByCardId[id] = "doppleganger";
           cardAnnotationsByCardId[id] = "Doppleganger werewolf";

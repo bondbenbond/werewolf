@@ -31,6 +31,7 @@ type NightOverlaysProps = {
   nightResultLines?: string[];
   discussionHintVisible: boolean;
   votingReady: boolean;
+  votingCountdownRemaining: number | null;
   revealResultsVisible: boolean;
   revealWinners: string;
   revealEliminated: string;
@@ -68,6 +69,7 @@ export function NightOverlays({
   nightResultLines,
   discussionHintVisible,
   votingReady,
+  votingCountdownRemaining,
   revealResultsVisible,
   revealWinners,
   revealEliminated,
@@ -98,8 +100,8 @@ export function NightOverlays({
                 : "Submitting action..."
               : nightActionState === "confirmed"
               ? ["mason", "minion"].includes(roleKey)
-                ? `Action confirmed · ${nightRoleInstruction ?? nightInstruction}`
-                : "Action confirmed"
+                ? "Action complete. You are done for this role step."
+                : "Action complete. Wait for the next role."
               : nightRoleInstruction ?? nightInstruction}
           </span>
         </div>
@@ -180,23 +182,25 @@ export function NightOverlays({
         </div>
       ) : null}
 
-      {phase === "discussion" && discussionHintVisible ? (
-        <div className="action-banner">
-          <span>Tap a player to place a suspicion coin</span>
+      {phase === "discussion" ? (
+        <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
+          <span>Tap any player card to assign a suspicion token. Start with your strongest suspect.</span>
         </div>
       ) : null}
 
       {phase === "voting" ? (
         votingReady ? (
-          <div className="action-banner">
-            <span>Tap a player to vote</span>
+          <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
+            <span>Tap any player card to cast your vote.</span>
           </div>
         ) : (
           <div className="overlay">
             <div className="overlay-card action-card">
-              <p className="eyebrow">Voting</p>
-              <h3>Cast your vote</h3>
-              <p className="lede">Starting in 2 seconds…</p>
+            <p className="eyebrow">Voting</p>
+            <h3>Cast your vote</h3>
+              <p className="lede">
+                Starting in {votingCountdownRemaining ?? 0} second{(votingCountdownRemaining ?? 0) === 1 ? "" : "s"}...
+              </p>
             </div>
           </div>
         )
@@ -209,9 +213,15 @@ export function NightOverlays({
             <h3>Winners: {revealWinners}</h3>
             <p className="lede">Eliminated: {revealEliminated}</p>
             <Button variant="success" onClick={onShowRevealResults}>
-              Show results
+              Show final roles
             </Button>
           </div>
+        </div>
+      ) : null}
+
+      {phase === "reveal" && revealResultsVisible ? (
+        <div className={`action-banner ${isHost ? "action-banner-host" : ""}`}>
+          <span>Final roles are shown on each face-up card.</span>
         </div>
       ) : null}
     </>

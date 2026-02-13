@@ -89,6 +89,7 @@ export function LobbyPlayerScreen({ data, currentPlayerId, onSetReady, onLeave }
           <div className="section-header">
             <h3>Roles</h3>
             <p className="lede">Host has selected:</p>
+            <p className="micro">Only the host can change roles.</p>
             <div className="summary-row">
               <span className="summary-pill">Players: {data.players.length}</span>
               <span className="summary-pill">
