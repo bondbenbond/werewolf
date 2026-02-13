@@ -1,11 +1,14 @@
 :root {
   font-family: "Space Grotesk", "Inter", system-ui, -apple-system, sans-serif;
   color: #e2e8f0;
-  background: radial-gradient(circle at 18% 20%, #30356b 0, #193458 35%, #0b1222 70%);
+  background:
+    radial-gradient(circle at 60% 14%, rgba(215, 179, 90, 0.22) 0%, rgba(215, 179, 90, 0.07) 20%, transparent 44%),
+    radial-gradient(circle at 14% 86%, rgba(120, 53, 15, 0.14) 0%, transparent 40%),
+    linear-gradient(165deg, #15171c 0%, #0e1014 42%, #08090c 100%);
   min-height: 100%;
-  --glass: rgba(255, 255, 255, 0.08);
-  --border: rgba(255, 255, 255, 0.08);
-  --glow: rgba(99, 102, 241, 0.35);
+  --glass: rgba(20, 22, 29, 0.74);
+  --border: rgba(201, 162, 74, 0.24);
+  --glow: rgba(201, 162, 74, 0.28);
   --accent: #16a34a;
   --accent2: #f97316;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -40,7 +43,9 @@ body::before {
   content: "";
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at 50% 20%, rgba(255, 255, 255, 0.08), transparent 55%);
+  background:
+    radial-gradient(circle at 54% 20%, rgba(215, 179, 90, 0.11), transparent 52%),
+    radial-gradient(circle at 34% 11%, rgba(203, 213, 225, 0.04), transparent 38%);
   pointer-events: none;
   z-index: 0;
 }
@@ -74,9 +79,9 @@ body::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 20% 20%, rgba(99, 102, 241, 0.3), transparent 40%),
-    radial-gradient(circle at 80% 20%, rgba(14, 165, 233, 0.25), transparent 35%),
-    radial-gradient(circle at 50% 70%, rgba(22, 163, 74, 0.18), transparent 40%);
+  background: radial-gradient(circle at 20% 20%, rgba(120, 53, 15, 0.18), transparent 38%),
+    radial-gradient(circle at 80% 20%, rgba(215, 179, 90, 0.18), transparent 36%),
+    radial-gradient(circle at 50% 72%, rgba(161, 98, 7, 0.14), transparent 42%);
   filter: blur(20px);
   z-index: 0;
 }
@@ -243,7 +248,7 @@ h1 {
 }
 
 .button.primary:hover {
-  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.25), 0 12px 30px rgba(14, 165, 233, 0.25);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.35), 0 12px 30px rgba(245, 158, 11, 0.28);
 }
 
 .button.success:hover {
@@ -329,9 +334,9 @@ select.input {
   padding: 14px;
   display: grid;
   gap: 10px;
-  background: rgba(32, 45, 74, 0.95);
+  background: rgba(20, 23, 30, 0.94);
   border-radius: 16px;
-  border: 2px solid rgba(226, 232, 240, 0.35);
+  border: 1px solid rgba(201, 162, 74, 0.34);
   box-shadow: 0 14px 28px rgba(2, 6, 23, 0.45);
   transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
   cursor: pointer;
@@ -363,8 +368,8 @@ select.input {
 .input {
   padding: 6px 10px;
   border-radius: 10px;
-  border-color: rgba(148, 163, 184, 0.12);
-  background: rgba(12, 18, 32, 0.55);
+  border-color: rgba(201, 162, 74, 0.2);
+  background: rgba(14, 16, 22, 0.78);
 }
 
 .home-card .button.primary {
@@ -374,8 +379,8 @@ select.input {
 
 .home-card.primary {
   transform: translateY(-1px);
-  background: rgba(38, 54, 90, 0.98);
-  border-color: rgba(240, 246, 255, 0.6);
+  background: rgba(24, 28, 36, 0.98);
+  border-color: rgba(215, 179, 90, 0.48);
   box-shadow: 0 18px 46px rgba(2, 6, 23, 0.55);
 }
 
@@ -385,8 +390,8 @@ select.input {
 
 .home-card:hover {
   transform: translateY(-5px);
-  background: rgba(52, 70, 114, 1);
-  border-color: rgba(255, 255, 255, 0.75);
+  background: rgba(28, 33, 43, 1);
+  border-color: rgba(229, 194, 112, 0.72);
   box-shadow: 0 28px 80px rgba(2, 6, 23, 0.65);
 }
 
@@ -427,8 +432,8 @@ select.input {
 }
 
 .pin-box:focus {
-  border-color: rgba(99, 102, 241, 1);
-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.35), 0 0 32px rgba(59, 130, 246, 0.55);
+  border-color: rgba(251, 191, 36, 1);
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.35), 0 0 32px rgba(245, 158, 11, 0.5);
 }
 
 .input:focus {
@@ -470,7 +475,7 @@ select.input {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(6, 9, 18, 0.6);
+  background: rgba(6, 7, 10, 0.66);
   display: grid;
   place-items: center;
   z-index: 50;
@@ -478,8 +483,9 @@ select.input {
 }
 
 .modal-card {
-  background: rgba(20, 30, 50, 0.98);
-  border: 1px solid rgba(226, 232, 240, 0.2);
+  background: radial-gradient(circle at 70% 12%, rgba(201, 162, 74, 0.07), transparent 42%),
+    rgba(16, 18, 24, 0.98);
+  border: 1px solid rgba(201, 162, 74, 0.34);
   border-radius: 16px;
   padding: 20px;
   width: min(520px, 100%);
@@ -608,8 +614,8 @@ select.input {
 }
 
 .settings-button {
-  background: rgba(59, 130, 246, 0.18);
-  border: 1px solid rgba(147, 197, 253, 0.4);
+  background: rgba(251, 191, 36, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.42);
   color: #e2e8f0;
   border-radius: 999px;
   padding: 4px 10px;
@@ -1356,7 +1362,7 @@ input[type="number"] {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #1d4ed8, #7c3aed);
+  background: linear-gradient(135deg, #b45309, #f59e0b);
   display: grid;
   place-items: center;
   color: #fff;
@@ -1665,8 +1671,9 @@ input[type="number"] {
   max-width: min(90vw, 460px);
   padding: 14px 16px;
   border-radius: 16px;
-  background: rgba(10, 16, 32, 0.95);
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: radial-gradient(circle at 62% 10%, rgba(201, 162, 74, 0.08), transparent 42%),
+    rgba(14, 16, 21, 0.95);
+  border: 1px solid rgba(201, 162, 74, 0.32);
   color: #e2e8f0;
   text-align: center;
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
@@ -1708,8 +1715,9 @@ input[type="number"] {
 .mini-modal-card {
   padding: 10px 14px;
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.94);
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: radial-gradient(circle at 66% 12%, rgba(201, 162, 74, 0.08), transparent 44%),
+    rgba(15, 18, 24, 0.94);
+  border: 1px solid rgba(201, 162, 74, 0.3);
   color: #e2e8f0;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   text-align: center;
@@ -1935,8 +1943,8 @@ input[type="number"] {
   gap: 8px;
   padding: 8px 14px;
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(14, 165, 233, 0.18));
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(135deg, rgba(180, 83, 9, 0.24), rgba(251, 191, 36, 0.22));
+  border: 1px solid rgba(255, 255, 255, 0.2);
   color: #e2e8f0;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
@@ -1998,7 +2006,7 @@ input[type="number"] {
 }
 
 .card-face.up {
-  background: linear-gradient(135deg, #16a34a, #0ea5e9);
+  background: linear-gradient(135deg, #16a34a, #f59e0b);
   color: #0c1224;
   background-size: cover;
   background-position: center;
@@ -2400,8 +2408,8 @@ input[type="number"] {
 }
 .toggle input:checked + .toggle-track .toggle-thumb {
   transform: translateX(24px);
-  background: linear-gradient(135deg, #0ea5e9, #22c55e);
-  box-shadow: 0 8px 18px rgba(14, 165, 233, 0.45);
+  background: linear-gradient(135deg, #f59e0b, #22c55e);
+  box-shadow: 0 8px 18px rgba(245, 158, 11, 0.45);
 }
 .toggle-label {
   color: #e2e8f0;
@@ -2460,7 +2468,7 @@ input[type="number"] {
   gap: 10px;
   padding: 10px 12px;
   background: rgba(12, 16, 26, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 14px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
@@ -2488,7 +2496,7 @@ input[type="number"] {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(7, 10, 20, 0.7);
+  background: rgba(7, 8, 12, 0.72);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2499,8 +2507,9 @@ input[type="number"] {
 }
 
 .overlay-card {
-  background: rgba(13, 17, 31, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: radial-gradient(circle at 68% 14%, rgba(201, 162, 74, 0.08), transparent 44%),
+    rgba(16, 18, 24, 0.96);
+  border: 1px solid rgba(201, 162, 74, 0.28);
   border-radius: 14px;
   padding: 16px;
   width: min(620px, 100%);
@@ -2516,7 +2525,7 @@ input[type="number"] {
   padding: 8px 14px;
   border-radius: 999px;
   background: rgba(12, 16, 26, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   color: #e2e8f0;
   font-weight: 600;
   font-size: 12px;
@@ -2615,7 +2624,7 @@ input[type="number"] {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 11px;
-  color: rgba(226, 232, 240, 0.55);
+  color: rgba(215, 179, 90, 0.76);
   text-align: center;
 }
 
@@ -2657,10 +2666,10 @@ input[type="number"] {
 
 .card-selectable {
   box-shadow:
-    0 0 0 3px rgba(59, 130, 246, 0.98),
-    0 0 0 6px rgba(147, 197, 253, 0.55),
-    0 0 26px rgba(37, 99, 235, 0.55);
-  border-color: rgba(147, 197, 253, 0.98) !important;
+    0 0 0 3px rgba(251, 191, 36, 0.98),
+    0 0 0 6px rgba(252, 211, 77, 0.52),
+    0 0 26px rgba(245, 158, 11, 0.55);
+  border-color: rgba(251, 191, 36, 0.98) !important;
   animation: selectablePulse 1s ease-in-out infinite;
 }
 
@@ -2678,7 +2687,7 @@ input[type="number"] {
   width: 100%;
   font-size: 10px;
   font-weight: 700;
-  color: rgba(191, 219, 254, 0.95);
+  color: rgba(252, 211, 77, 0.98);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   text-align: center;
@@ -2698,15 +2707,15 @@ input[type="number"] {
   0%,
   100% {
     box-shadow:
-      0 0 0 3px rgba(59, 130, 246, 0.98),
-      0 0 0 6px rgba(147, 197, 253, 0.45),
-      0 0 20px rgba(37, 99, 235, 0.4);
+      0 0 0 3px rgba(251, 191, 36, 0.98),
+      0 0 0 6px rgba(252, 211, 77, 0.45),
+      0 0 20px rgba(245, 158, 11, 0.4);
   }
   50% {
     box-shadow:
-      0 0 0 3px rgba(59, 130, 246, 0.98),
-      0 0 0 7px rgba(191, 219, 254, 0.7),
-      0 0 34px rgba(59, 130, 246, 0.65);
+      0 0 0 3px rgba(251, 191, 36, 0.98),
+      0 0 0 7px rgba(253, 230, 138, 0.72),
+      0 0 34px rgba(245, 158, 11, 0.66);
   }
 }
 
@@ -2924,7 +2933,9 @@ input[type="number"] {
   padding: 24px;
   color: #e2e8f0;
   font-weight: 600;
-  background: radial-gradient(circle at 20% 20%, #1f2a44 0%, #0b0f1b 65%);
+  background:
+    radial-gradient(circle at 60% 14%, rgba(215, 179, 90, 0.18) 0%, rgba(215, 179, 90, 0.07) 20%, transparent 46%),
+    linear-gradient(170deg, #16181d 0%, #0e1014 42%, #08090c 100%);
 }
 
 .spinner {
@@ -3131,8 +3142,11 @@ input[type="number"] {
 
 /* Softer center glow to lift cards */
 .board {
-  background: radial-gradient(ellipse at 50% 35%, rgba(255, 255, 255, 0.08), rgba(12, 16, 26, 0.02) 60%),
-    #0a1020;
+  background:
+    radial-gradient(ellipse at 52% 33%, rgba(215, 179, 90, 0.11), rgba(9, 10, 13, 0.04) 49%),
+    radial-gradient(ellipse at 2% 50%, rgba(0, 0, 0, 0.42), transparent 28%),
+    radial-gradient(ellipse at 98% 50%, rgba(0, 0, 0, 0.42), transparent 28%),
+    linear-gradient(160deg, #14171c 0%, #0d1014 46%, #090a0d 100%);
 }
 
 /* Highlight your seat slightly */
@@ -3207,7 +3221,7 @@ input[type="number"] {
   padding: 8px 12px;
   border-radius: 14px;
   background: rgba(12, 16, 26, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
   backdrop-filter: blur(6px);
@@ -3235,7 +3249,7 @@ input[type="number"] {
   padding: 4px 8px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   font-weight: 700;
   font-size: 12px;
   color: #e2e8f0;
