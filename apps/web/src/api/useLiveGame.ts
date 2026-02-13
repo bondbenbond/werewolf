@@ -111,6 +111,7 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
   const forceSnapshotRef = useRef(false);
   const refreshTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const hiddenPollTimerRef = useRef<number | null>(null);
 
   const snapshotUrl = useCallback(() => {
     const url = new URL(`/games/${gameId}/snapshot`, serverBaseUrl);
@@ -183,12 +184,42 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
 
     let active = true;
     let source: EventSource | null = null;
+    let connecting = false;
 
     const closeSource = () => {
       if (source) {
         source.close();
         source = null;
       }
+    };
+    const clearHiddenPoll = () => {
+      if (hiddenPollTimerRef.current !== null) {
+        window.clearInterval(hiddenPollTimerRef.current);
+        hiddenPollTimerRef.current = null;
+      }
+    };
+    const clearReconnect = () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+    const startHiddenPoll = () => {
+      if (hiddenPollTimerRef.current !== null) return;
+      hiddenPollTimerRef.current = window.setInterval(async () => {
+        if (!active) return;
+        try {
+          await fetchSnapshot();
+          setState((prev) => ({ ...prev, status: "connected", error: undefined }));
+        } catch (error) {
+          if (!active) return;
+          setState((prev) => ({
+            ...prev,
+            status: "error",
+            error: (error as Error).message,
+          }));
+        }
+      }, 2000);
     };
 
     const scheduleRefresh = () => {
@@ -231,6 +262,8 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
     };
 
     const connect = async () => {
+      if (connecting) return;
+      connecting = true;
       setState((prev) => ({ ...prev, status: "loading", error: undefined }));
       try {
         await fetchSnapshot();
@@ -238,11 +271,23 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
         if (active) {
           setState({ status: "error", error: (error as Error).message });
         }
+        connecting = false;
         return;
       }
 
-      if (!active) return;
+      if (!active) {
+        connecting = false;
+        return;
+      }
 
+      if (document.hidden) {
+        setState((prev) => ({ ...prev, status: "connected", error: undefined }));
+        startHiddenPoll();
+        connecting = false;
+        return;
+      }
+
+      clearHiddenPoll();
       source = new EventSource(streamUrl(lastVersionRef.current));
       source.onopen = () => {
         if (active) {
@@ -270,6 +315,11 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
       source.onerror = () => {
         closeSource();
         if (!active) return;
+        if (document.hidden) {
+          setState((prev) => ({ ...prev, status: "connected", error: undefined }));
+          startHiddenPoll();
+          return;
+        }
         setState((prev) => ({ ...prev, status: "error", error: "Stream disconnected" }));
         if (reconnectTimerRef.current === null) {
           reconnectTimerRef.current = window.setTimeout(() => {
@@ -278,21 +328,34 @@ export function useLiveGame({ enabled, gameId, playerId, secret }: LiveGameOptio
           }, 1500);
         }
       };
+      connecting = false;
     };
 
+    const handleVisibilityChange = () => {
+      if (!active) return;
+      if (document.hidden) {
+        closeSource();
+        clearReconnect();
+        startHiddenPoll();
+        return;
+      }
+      clearHiddenPoll();
+      void connect();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     connect();
 
     return () => {
       active = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       closeSource();
+      clearHiddenPoll();
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
-      if (reconnectTimerRef.current !== null) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
+      clearReconnect();
     };
   }, [enabled, fetchSnapshot, gameId, streamUrl]);
 

@@ -701,10 +701,12 @@ const startNight = (record: GameRecord) => {
       mode: "parallel",
     };
     clearParallelNightTimer(record);
-    record.parallelNightTimer = setTimeout(() => {
-      advanceNightStep(record);
-      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-    }, getNightStepMs(record));
+    if (record.state.settings.autoAdvanceNight) {
+      record.parallelNightTimer = setTimeout(() => {
+        advanceNightStep(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+      }, getNightStepMs(record));
+    }
     // Only send lone-werewolf action hint immediately so they can choose a center card.
     const wolves = eligiblePlayersForNightRole(record.state, "werewolf");
     wolves.forEach((wolfId) => {
@@ -756,16 +758,20 @@ const advanceNightStep = (record: GameRecord) => {
     });
     record.pendingParallelViews.clear();
     record.state.phase = "parallelResult";
-    record.state.phaseEndsAt = Date.now() + getParallelResultMs(record);
+    record.state.phaseEndsAt = record.state.settings.autoAdvanceNight
+      ? Date.now() + getParallelResultMs(record)
+      : undefined;
     record.state.night = undefined;
     clearParallelResultTimer(record);
-    record.parallelResultTimer = setTimeout(() => {
-      record.state.phase = "discussion";
-      record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
-      record.state.updatedAt = Date.now();
-      scheduleDiscussionAutoAdvance(record);
-      appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
-    }, getParallelResultMs(record));
+    if (record.state.settings.autoAdvanceNight) {
+      record.parallelResultTimer = setTimeout(() => {
+        record.state.phase = "discussion";
+        record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+        record.state.updatedAt = Date.now();
+        scheduleDiscussionAutoAdvance(record);
+        appendEvent(record, "TIMER_ADVANCE_PHASE", { phase: record.state.phase });
+      }, getParallelResultMs(record));
+    }
     record.state.updatedAt = Date.now();
     return;
   }
@@ -1026,6 +1032,12 @@ const handleNightAction = (record: GameRecord, playerId: string, action: NightAc
             ? { kind: "dopplegangerActAsRole", role: targetRole, targetPlayerId: action.targetPlayerId }
             : { kind: "dopplegangerCopiedRole", role: targetRole, targetPlayerId: action.targetPlayerId };
         setPlayerView(view);
+        if (mode === "parallel") {
+          // In parallel night, Doppelganger needs immediate feedback about the copied card
+          // so they can perform the follow-up action without waiting for result phase.
+          record.privateViews.set(playerId, view);
+          emitPrivate(record, playerId, "NIGHT_ACTION_RESULT", view as unknown as Record<string, unknown>);
+        }
         return view;
       }
     }
@@ -1416,7 +1428,14 @@ app.post(
     if (!isHost || (record.state.phase !== "night" && record.state.phase !== "parallelResult")) {
       return reply.code(400).send({ error: "NOT_ALLOWED", message: "Host only during night" });
     }
-    advanceNightStep(record);
+    if (record.state.phase === "parallelResult") {
+      clearParallelResultTimer(record);
+      record.state.phase = "discussion";
+      record.state.phaseEndsAt = Date.now() + record.state.settings.discussionSeconds * 1000;
+      scheduleDiscussionAutoAdvance(record);
+    } else {
+      advanceNightStep(record);
+    }
     record.state.updatedAt = Date.now();
   }
 
