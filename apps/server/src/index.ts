@@ -1148,7 +1148,13 @@ const app = fastify({
   logger,
   disableRequestLogging: true,
 });
-app.register(cors, { origin: true });
+app.register(cors, {
+  origin: true,
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  maxAge: 86400,
+  optionsSuccessStatus: 200,
+});
 
 app.post(
   "/games",
